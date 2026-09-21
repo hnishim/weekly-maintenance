@@ -121,7 +121,9 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertEqual(len(dialogs), 1)
         self.assertIn("alpha", " ".join(dialogs[0]))
         self.assertIn("beta", " ".join(dialogs[0]))
-        self.assertEqual(len(self.called(calls, "brew", "upgrade")), 1)
+        # Explicit names bind the upgrade to the displayed approval scope.
+        self.assertEqual(self.called(calls, "brew", "upgrade"),
+                         [["brew", "upgrade", "alpha", "beta"]])
         self.assertFalse(any(c == ["mo", "clean"] for c in calls))
 
     def test_brew_rejected_never_upgrades(self):
@@ -145,7 +147,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
 
     def test_brew_check_failure_does_not_suppress_mole_preview(self):
         _, calls = self.run_case(
-            BREW_UPDATE_FAIL="1", MO_PREVIEW="Cache candidates: 2 GiB\n",
+            BREW_UPDATE_FAIL="1", MO_PREVIEW="Cache candidates: 2 GiB\n/Users/example/Library/Caches/example\n",
             DIALOG_ANSWERS="Cancel",
         )
         self.assertFalse(self.called(calls, "brew", "upgrade"))
@@ -162,23 +164,51 @@ class WeeklyMaintenanceTests(unittest.TestCase):
 
     def test_mole_rejected_never_deletes(self):
         _, calls = self.run_case(
-            MO_PREVIEW="Cache candidates: 2 GiB\n",
+            MO_PREVIEW="Cache candidates: 2 GiB\n/Users/example/Library/Caches/example\n",
             DIALOG_ANSWERS="Cancel",
         )
         dialogs = self.called(calls, "osascript")
         self.assertEqual(len(dialogs), 1)
         self.assertIn("2 GiB", " ".join(dialogs[0]))
+        self.assertIn("/Users/example/Library/Caches/example", " ".join(dialogs[0]))
         self.assertFalse(any(c == ["mo", "clean"] for c in calls))
 
     def test_separate_approvals_do_not_leak_between_operations(self):
         _, calls = self.run_case(
             BREW_OUTDATED="alpha\n",
-            MO_PREVIEW="Cache candidates: 2 GiB\n",
+            MO_PREVIEW="Cache candidates: 2 GiB\n/Users/example/Library/Caches/example\n",
             DIALOG_ANSWERS="Cancel|OK",
         )
         self.assertEqual(len(self.called(calls, "osascript")), 2)
         self.assertFalse(self.called(calls, "brew", "upgrade"))
         self.assertEqual(sum(c == ["mo", "clean"] for c in calls), 1)
+
+    def test_mole_uninterpretable_preview_never_deletes(self):
+        # Capacity-only or unrecognized output cannot establish deletion scope.
+        for preview in ("2 GiB\n", "Scan completed (unknown format)\n"):
+            with self.subTest(preview=preview):
+                _, calls = self.run_case(
+                    MO_PREVIEW=preview, DIALOG_ANSWERS="OK",
+                )
+                self.assertFalse(any(c == ["mo", "clean"] for c in calls))
+
+    def test_brew_upgrade_failure_is_observable(self):
+        result, calls = self.run_case(
+            BREW_OUTDATED="alpha\n", BREW_UPGRADE_FAIL="1",
+        )
+        self.assertEqual(self.called(calls, "brew", "upgrade"),
+                         [["brew", "upgrade", "alpha"]])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("brew upgrade failed", result.stdout + result.stderr)
+
+    def test_mole_clean_failure_is_observable(self):
+        result, calls = self.run_case(
+            MO_PREVIEW="Cache candidates: 2 GiB\n/Users/example/Library/Caches/example\n",
+            MO_CLEAN_FAIL="1",
+        )
+        self.assertEqual(sum(c == ["mo", "clean"] for c in calls), 1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("mo clean failed", result.stdout + result.stderr)
 
     def test_plist_only_schedules_monday_at_0830(self):
         with PLIST.open("rb") as file:
