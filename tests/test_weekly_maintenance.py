@@ -66,7 +66,7 @@ elif name == "osascript":
 
 
 class WeeklyMaintenanceTests(unittest.TestCase):
-    def run_case(self, mode, **overrides):
+    def run_case(self, mode, initial_report=None, **overrides):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             fake_bin = base / "bin"
@@ -78,6 +78,8 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             call_log = base / "calls.jsonl"
             call_log.touch()
             report = base / "last-check.txt"
+            if initial_report is not None:
+                report.write_text(initial_report, encoding="utf-8")
             env = dict(os.environ)
             env.update({
                 "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
@@ -125,6 +127,13 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertIn("Homebrew", report)
         self.assertIn("Mole", report)
 
+    def assert_check_never_updates_or_prompts(self, calls):
+        self.assertFalse(self.matches(calls, "brew", "update"))
+        self.assertFalse(self.matches(calls, "brew", "upgrade"))
+        self.assertNotIn(["mo", "clean"], calls)
+        self.assertFalse(any("display dialog" in " ".join(c)
+                             for c in self.matches(calls, "osascript")))
+
     def test_check_notifies_only_for_brew_candidates_and_writes_result(self):
         result, calls, report = self.run_case(
             "check", BREW_OUTDATED="alpha\nbeta\n",
@@ -137,7 +146,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertIn("alpha", report)
         self.assertIn("beta", report)
         self.assertIn("run", report)
-        self.assertFalse(self.destructive(calls))
+        self.assert_check_never_updates_or_prompts(calls)
 
     def test_check_notifies_for_mole_candidates_without_brew_candidates(self):
         result, calls, report = self.run_case(
@@ -148,7 +157,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertEqual(len(notifications), 1)
         self.assertIn("display notification", " ".join(notifications[0]))
         self.assertIn("Mole", report)
-        self.assertFalse(self.destructive(calls))
+        self.assert_check_never_updates_or_prompts(calls)
 
     def test_check_with_both_candidates_does_not_ask_for_approval(self):
         _, calls, report = self.run_case(
@@ -156,9 +165,12 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             MO_PREVIEW="Potential cleanup: 2 GiB\n",
         )
         self.assertIsNotNone(report)
-        self.assertFalse(any("display dialog" in " ".join(c)
-                             for c in self.matches(calls, "osascript")))
-        self.assertFalse(self.destructive(calls))
+        self.assertIn("alpha", report)
+        self.assertIn("2 GiB", report)
+        notifications = self.matches(calls, "osascript")
+        self.assertEqual(len(notifications), 1)
+        self.assertIn("display notification", " ".join(notifications[0]))
+        self.assert_check_never_updates_or_prompts(calls)
 
     def test_failed_notification_still_keeps_last_check(self):
         _, calls, report = self.run_case(
@@ -167,19 +179,20 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertTrue(self.matches(calls, "osascript"))
         self.assertIsNotNone(report)
         self.assertIn("alpha", report)
-        self.assertFalse(self.destructive(calls))
+        self.assert_check_never_updates_or_prompts(calls)
 
     def test_check_failure_does_not_trigger_modification(self):
         result, calls, report = self.run_case(
             "check", BREW_OUTDATED_FAIL="1", MO_DRY_RUN_FAIL="1",
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(self.destructive(calls))
+        self.assert_check_never_updates_or_prompts(calls)
         self.assertIsNotNone(report)
 
     def test_run_rechecks_current_brew_candidates_and_upgrades_named_set(self):
         result, calls, _ = self.run_case(
-            "run", BREW_OUTDATED="new-alpha\nnew-beta\n",
+            "run", initial_report="Previous check: old-alpha and old-mole\n",
+            BREW_OUTDATED="new-alpha\nnew-beta\n",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.matches(calls, "brew", "update"))
@@ -191,10 +204,25 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertEqual(len(dialogs), 1)
         self.assertIn("new-alpha", " ".join(dialogs[0]))
         self.assertIn("new-beta", " ".join(dialogs[0]))
+        self.assertNotIn("old-alpha", " ".join(dialogs[0]))
         self.assertEqual(
             self.matches(calls, "brew", "upgrade"),
             [["brew", "upgrade", "new-alpha", "new-beta"]],
         )
+
+    def test_run_rechecks_mole_instead_of_reusing_previous_report(self):
+        result, calls, _ = self.run_case(
+            "run", initial_report="Previous Mole: old-cache 1 GiB\n",
+            MO_PREVIEW="Current Mole: new-cache 2 GiB\n",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.matches(calls, "mo", "clean", "--dry-run")), 1)
+        dialogs = [c for c in self.matches(calls, "osascript")
+                   if "display dialog" in " ".join(c)]
+        self.assertEqual(len(dialogs), 1)
+        self.assertIn("new-cache", " ".join(dialogs[0]))
+        self.assertNotIn("old-cache", " ".join(dialogs[0]))
+        self.assertEqual(sum(c == ["mo", "clean"] for c in calls), 1)
 
     def test_run_no_candidates_never_requests_approval_or_changes(self):
         _, calls, _ = self.run_case("run")
