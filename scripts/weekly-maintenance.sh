@@ -25,7 +25,7 @@ collect_brew() {
       return
     fi
   fi
-  if brew_output="$(brew outdated --quiet 2>&1)"; then
+  if brew_output="$(brew outdated --quiet)"; then
     brew_ok=1
     while IFS= read -r package; do
       [[ -n "$package" ]] && packages+=("$package")
@@ -36,7 +36,7 @@ collect_brew() {
   fi
 }
 collect_mole() {
-  if mole_output="$(mo clean --dry-run 2>&1)"; then
+  if mole_output="$(mo clean --dry-run)"; then
     mole_ok=1
     # Mole emits a summary even when there is no reclaimable space.
     if [[ -n "$mole_output" &&
