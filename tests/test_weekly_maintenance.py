@@ -80,6 +80,10 @@ elif name == "osascript":
             print("button returned:Cancel")
         elif answer == "unexpected":
             print("no approval")
+        elif answer == "spoofed":
+            print("button returned:OK; button returned:Cancel")
+        elif answer == "spoofed_prefix":
+            print("warning: button returned:OK")
         else:
             print("button returned:OK")
 '''
@@ -498,7 +502,8 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertTrue(all(name in result.stdout for name in EXPECTED_TEXTLINT_PACKAGES))
 
     def test_unapproved_or_unexpected_dialog_never_modifies_its_section(self):
-        for answer in ("Cancel", "error", "unexpected"):
+        for answer in ("Cancel", "error", "unexpected", "spoofed",
+                       "spoofed_prefix"):
             with self.subTest(answer=answer):
                 _, calls, _ = self.run_case("run", BREW_OUTDATED="alpha\n",
                     DIALOG_ANSWERS=answer + "|Cancel|Cancel")
@@ -506,6 +511,15 @@ class WeeklyMaintenanceTests(unittest.TestCase):
                                      c[1:2] in (["upgrade"], ["cleanup"], ["autoremove"])
                                      for c in calls))
                 self.assertFalse(self.destructive(calls))
+
+    def test_mole_rejects_spoofed_ok_and_never_runs_cleanup(self):
+        for answer in ("spoofed", "spoofed_prefix"):
+            with self.subTest(answer=answer):
+                _, calls, _ = self.run_case(
+                    "run", MO_PREVIEW="Potential cleanup: 2 GiB\n",
+                    DIALOG_ANSWERS="Cancel|Cancel|Cancel|" + answer)
+                self.assertEqual(len(self.dialogs(calls)), 4)
+                self.assertNotIn(["mo", "clean"], calls)
 
     def test_all_approval_dialogs_have_no_120_second_timeout(self):
         _, calls, _ = self.run_case("run", BREW_OUTDATED="alpha\n",
@@ -515,6 +529,26 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         for dialog in self.dialogs(calls):
             self.assertNotIn("giving up after", " ".join(dialog))
 
+    @staticmethod
+    def assert_section_result(output, label, expected_status):
+        # Check the status on the same output line as the affected section,
+        # not merely whether a section name and a status appear somewhere.
+        import re
+        status_words = {
+            "success": r"success|successful|succeeded|成功|完了",
+            "failed": r"fail(?:ed|ure)?|error|失敗",
+            "not_approved": r"not approved|declined|denied|未承認|不承認|拒否",
+            "skipped": r"skip(?:ped)?|省略|スキップ|実行せず|実行なし",
+            "no_candidates": r"no candidates|候補なし|候補ゼロ|対象なし|対象ゼロ",
+        }
+        lines = [line for line in output.splitlines()
+                 if label.lower() in line.lower()]
+        assert lines, f"result line for {label!r} was not reported: {output!r}"
+        assert any(re.search(status_words[expected_status], line, re.I)
+                   for line in lines), (
+            f"section {label!r} must report {expected_status}: {lines!r}"
+        )
+
     def test_run_reports_each_update_or_cleanup_section(self):
         result, _, _ = self.run_case("run", BREW_OUTDATED="alpha\n",
             MO_PREVIEW="Potential cleanup: 2 GiB\n",
@@ -523,6 +557,35 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         for label in ("Homebrew", "greedy", "cleanup", "autoremove",
                       "Mac App Store", "npm", "Mole"):
             self.assertIn(label.lower(), result.stdout.lower())
+        for label in ("greedy", "cleanup", "autoremove", "npm"):
+            self.assert_section_result(result.stdout, label, "success")
+        self.assert_section_result(result.stdout, "Mac App Store", "not_approved")
+        self.assert_section_result(result.stdout, "Mole", "not_approved")
+
+    def test_run_reports_failed_brew_stage_and_later_skips_separately(self):
+        result, _, _ = self.run_case(
+            "run", BREW_OUTDATED="alpha\n", BREW_GREEDY_FAIL="1",
+            MO_PREVIEW="Potential cleanup: 2 GiB\n",
+            DIALOG_ANSWERS="OK|OK|OK|Cancel")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_section_result(result.stdout, "greedy", "failed")
+        for label in ("cleanup", "autoremove"):
+            self.assert_section_result(result.stdout, label, "skipped")
+        self.assert_section_result(result.stdout, "Mac App Store", "success")
+        self.assert_section_result(result.stdout, "npm", "success")
+        self.assert_section_result(result.stdout, "Mole", "not_approved")
+
+    def test_run_reports_no_candidates_and_unapproved_sections_separately(self):
+        result, _, _ = self.run_case(
+            "run", MO_PREVIEW="Potential cleanup: 2 GiB\n",
+            DIALOG_ANSWERS="Cancel|Cancel|Cancel|Cancel")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_section_result(result.stdout, "Homebrew", "no_candidates")
+        for label in ("greedy", "cleanup", "autoremove"):
+            self.assert_section_result(result.stdout, label, "not_approved")
+        self.assert_section_result(result.stdout, "Mac App Store", "not_approved")
+        self.assert_section_result(result.stdout, "npm", "not_approved")
+        self.assert_section_result(result.stdout, "Mole", "not_approved")
 
 
     def test_check_report_quotes_manual_run_path_with_spaces(self):
