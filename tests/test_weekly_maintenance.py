@@ -5,6 +5,7 @@ notification delivery, Mole deletion behavior, GUI authorization, or launchd tim
 """
 import json
 import os
+import shutil
 import plistlib
 import subprocess
 import tempfile
@@ -53,9 +54,13 @@ elif name == "mo":
         if os.environ.get("MO_CLEAN_FAIL") == "1":
             sys.exit(11)
 elif name == "mas":
+    if os.environ.get("TOOL_MISSING") == "mas":
+        sys.exit(127)
     if os.environ.get("MAS_FAIL") == "1":
         sys.exit(17)
 elif name == "npm":
+    if os.environ.get("TOOL_MISSING") == "npm":
+        sys.exit(127)
     if os.environ.get("NPM_FAIL") == "1":
         sys.exit(18)
 elif name == "osascript":
@@ -141,6 +146,10 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             base = Path(tmp)
             fake_bin = base / "bin"
             fake_bin.mkdir()
+            source_dir = base / "source script with spaces"
+            source_dir.mkdir()
+            source_script = source_dir / "weekly maintenance.sh"
+            shutil.copyfile(SCRIPT, source_script)
             for name in ("brew", "mo", "osascript", "mas", "npm"):
                 file = fake_bin / name
                 file.write_text(FAKE, encoding="utf-8")
@@ -161,7 +170,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
                 "DIALOG_ANSWERS": "OK",
             })
             env.update(overrides)
-            args = ["bash", str(SCRIPT), mode]
+            args = ["bash", str(source_script), mode]
             result = subprocess.run(
                 args, cwd=ROOT, env=env, text=True, capture_output=True,
                 timeout=30,
@@ -514,6 +523,26 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         for label in ("Homebrew", "greedy", "cleanup", "autoremove",
                       "Mac App Store", "npm", "Mole"):
             self.assertIn(label.lower(), result.stdout.lower())
+
+
+    def test_check_report_quotes_manual_run_path_with_spaces(self):
+        result, calls, report = self.run_case(
+            "check", BREW_OUTDATED="alpha\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("source\\ script\\ with\\ spaces/weekly\\ maintenance.sh run", report)
+        self.assert_check_never_updates_or_prompts(calls)
+
+    def test_unavailable_mas_or_npm_records_failure_and_keeps_other_sections(self):
+        for missing in ("mas", "npm"):
+            with self.subTest(missing=missing):
+                result, calls, _ = self.run_case(
+                    "run", TOOL_MISSING=missing,
+                    MO_PREVIEW="Potential cleanup: 2 GiB\n",
+                    DIALOG_ANSWERS="Cancel|OK|OK|OK")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(["mas", "upgrade"], calls)
+                self.assertTrue(self.matches(calls, "npm", "install"))
+                self.assertIn(["mo", "clean"], calls)
 
     def test_plist_schedules_only_check_at_monday_0830(self):
         with PLIST.open("rb") as file:
