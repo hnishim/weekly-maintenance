@@ -1,4 +1,4 @@
-"""HIR-293: weekly notification and separately authorized manual execution.
+"""HIR-293/HIR-307: notification-only check and separately approved run.
 
 All external commands are faked. These tests do not establish actual macOS
 notification delivery, Mole deletion behavior, GUI authorization, or launchd timing.
@@ -35,8 +35,15 @@ if name == "brew":
             sys.exit(8)
         print(os.environ.get("BREW_OUTDATED", ""), end="")
     elif args[:1] == ["upgrade"]:
-        if os.environ.get("BREW_UPGRADE_FAIL") == "1":
+        if args[1:] == ["--cask", "--greedy"]:
+            if os.environ.get("BREW_GREEDY_FAIL") == "1":
+                sys.exit(14)
+        elif os.environ.get("BREW_UPGRADE_FAIL") == "1":
             sys.exit(9)
+    elif args[:1] == ["cleanup"] and os.environ.get("BREW_CLEANUP_FAIL") == "1":
+        sys.exit(15)
+    elif args[:1] == ["autoremove"] and os.environ.get("BREW_AUTOREMOVE_FAIL") == "1":
+        sys.exit(16)
 elif name == "mo":
     if args[:2] == ["clean", "--dry-run"]:
         if os.environ.get("MO_DRY_RUN_FAIL") == "1":
@@ -45,6 +52,12 @@ elif name == "mo":
     elif args[:1] == ["clean"]:
         if os.environ.get("MO_CLEAN_FAIL") == "1":
             sys.exit(11)
+elif name == "mas":
+    if os.environ.get("MAS_FAIL") == "1":
+        sys.exit(17)
+elif name == "npm":
+    if os.environ.get("NPM_FAIL") == "1":
+        sys.exit(18)
 elif name == "osascript":
     script = " ".join(args)
     if "display notification" in script:
@@ -60,9 +73,66 @@ elif name == "osascript":
             sys.exit(13)
         if answer == "Cancel":
             print("button returned:Cancel")
+        elif answer == "unexpected":
+            print("no approval")
         else:
             print("button returned:OK")
 '''
+
+# Legacy update scope: changing the list requires an explicit requirement update.
+EXPECTED_TEXTLINT_PACKAGES = (
+    "textlint",
+    "@textlint-ja/textlint-rule-no-dropping-i",
+    "@textlint-ja/textlint-rule-no-filler",
+    "@textlint-ja/textlint-rule-no-insert-dropping-sa",
+    "@textlint-ja/textlint-rule-no-insert-re",
+    "@textlint-ja/textlint-rule-no-synonyms",
+    "@textlint-ja/textlint-rule-preset-ai-writing",
+    "@textlint-rule/textlint-rule-no-unmatched-pair",
+    "textlint-rule-abbr-within-parentheses",
+    "textlint-rule-alive-link",
+    "textlint-rule-common-misspellings",
+    "textlint-rule-date-weekday-mismatch",
+    "textlint-rule-doubled-spaces",
+    "textlint-rule-en-capitalization",
+    "textlint-rule-en-max-word-count",
+    "textlint-rule-ja-hiragana-fukushi",
+    "textlint-rule-ja-hiragana-hojodoushi",
+    "textlint-rule-ja-hiragana-keishikimeishi",
+    "textlint-rule-ja-no-abusage",
+    "textlint-rule-ja-no-inappropriate-words",
+    "textlint-rule-ja-no-orthographic-variants",
+    "textlint-rule-ja-no-redundant-expression",
+    "textlint-rule-ja-no-successive-word",
+    "textlint-rule-ja-overlooked-typo",
+    "textlint-rule-ja-unnatural-alphabet",
+    "textlint-rule-no-dead-link",
+    "textlint-rule-no-double-negative-ja",
+    "textlint-rule-no-doubled-conjunction",
+    "textlint-rule-no-doubled-conjunctive-particle-ga",
+    "textlint-rule-no-doubled-joshi",
+    "textlint-rule-no-dropping-the-ra",
+    "textlint-rule-no-empty-element",
+    "textlint-rule-no-empty-section",
+    "textlint-rule-no-hankaku-kana",
+    "textlint-rule-no-kangxi-radicals",
+    "textlint-rule-no-mix-dearu-desumasu",
+    "textlint-rule-no-nfd",
+    "textlint-rule-no-start-duplicated-conjunction",
+    "textlint-rule-no-todo",
+    "textlint-rule-no-zero-width-spaces",
+    "textlint-rule-period-in-header",
+    "textlint-rule-period-in-list-item",
+    "textlint-rule-prefer-tari-tari",
+    "textlint-rule-preset-ja-spacing",
+    "textlint-rule-preset-ja-technical-writing",
+    "textlint-rule-preset-japanese",
+    "textlint-rule-preset-jtf-style",
+    "textlint-rule-prh",
+    "textlint-rule-sentence-length",
+    "textlint-rule-spelling",
+    "textlint-rule-terminology",
+)
 
 
 class WeeklyMaintenanceTests(unittest.TestCase):
@@ -71,7 +141,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             base = Path(tmp)
             fake_bin = base / "bin"
             fake_bin.mkdir()
-            for name in ("brew", "mo", "osascript"):
+            for name in ("brew", "mo", "osascript", "mas", "npm"):
                 file = fake_bin / name
                 file.write_text(FAKE, encoding="utf-8")
                 file.chmod(0o755)
@@ -108,10 +178,17 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         ]
 
     @staticmethod
+    def dialogs(calls):
+        return [c for c in calls
+                if c[0] == "osascript" and "display dialog" in " ".join(c)]
+
+    @staticmethod
     def destructive(calls):
         return [
             c for c in calls
             if (c[0] == "brew" and c[1:2] == ["upgrade"])
+            or (c[0] == "brew" and c[1:2] in (["cleanup"], ["autoremove"]))
+            or (c[0] in ("mas", "npm"))
             or (c[0] == "mo" and c[1:] == ["clean"])
         ]
 
@@ -131,6 +208,10 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertFalse(self.matches(calls, "brew", "update"))
         self.assertFalse(self.matches(calls, "brew", "upgrade"))
         self.assertNotIn(["mo", "clean"], calls)
+        self.assertFalse(self.matches(calls, "brew", "cleanup"))
+        self.assertFalse(self.matches(calls, "brew", "autoremove"))
+        self.assertFalse(self.matches(calls, "mas"))
+        self.assertFalse(self.matches(calls, "npm"))
         self.assertFalse(any("display dialog" in " ".join(c)
                              for c in self.matches(calls, "osascript")))
 
@@ -201,14 +282,12 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             c for c in self.matches(calls, "osascript")
             if "display dialog" in " ".join(c)
         ]
-        self.assertEqual(len(dialogs), 1)
+        self.assertEqual(len(dialogs), 3)
         self.assertIn("new-alpha", " ".join(dialogs[0]))
         self.assertIn("new-beta", " ".join(dialogs[0]))
         self.assertNotIn("old-alpha", " ".join(dialogs[0]))
-        self.assertEqual(
-            self.matches(calls, "brew", "upgrade"),
-            [["brew", "upgrade", "new-alpha", "new-beta"]],
-        )
+        self.assertIn(["brew", "upgrade", "new-alpha", "new-beta"], calls)
+        self.assertIn(["brew", "upgrade", "--cask", "--greedy"], calls)
 
     def test_run_rechecks_mole_instead_of_reusing_previous_report(self):
         result, calls, _ = self.run_case(
@@ -219,14 +298,18 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertEqual(len(self.matches(calls, "mo", "clean", "--dry-run")), 1)
         dialogs = [c for c in self.matches(calls, "osascript")
                    if "display dialog" in " ".join(c)]
-        self.assertEqual(len(dialogs), 1)
-        self.assertIn("new-cache", " ".join(dialogs[0]))
-        self.assertNotIn("old-cache", " ".join(dialogs[0]))
+        self.assertEqual(len(dialogs), 4)
+        self.assertIn("new-cache", " ".join(dialogs[-1]))
+        self.assertNotIn("old-cache", " ".join(dialogs[-1]))
         self.assertEqual(sum(c == ["mo", "clean"] for c in calls), 1)
 
-    def test_run_no_candidates_never_requests_approval_or_changes(self):
-        _, calls, _ = self.run_case("run")
-        self.assertFalse(self.matches(calls, "osascript"))
+    def test_run_no_normal_candidates_still_requires_broad_scope_approval(self):
+        result, calls, _ = self.run_case("run", DIALOG_ANSWERS="Cancel|Cancel|Cancel")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        dialogs = self.dialogs(calls)
+        self.assertEqual(len(dialogs), 3)
+        self.assertIn("greedy", " ".join(dialogs[0]).lower())
+        self.assertIn("cleanup", " ".join(dialogs[0]).lower())
         self.assertFalse(self.destructive(calls))
 
     def test_run_reject_timeout_and_error_never_upgrade(self):
@@ -259,8 +342,8 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             c for c in self.matches(calls, "osascript")
             if "display dialog" in " ".join(c)
         ]
-        self.assertEqual(len(dialogs), 1)
-        text = " ".join(dialogs[0])
+        self.assertEqual(len(dialogs), 4)
+        text = " ".join(dialogs[-1])
         self.assertIn("Mole", text)
         self.assertTrue("rescan" in text.lower() or "再走査" in text)
         self.assertEqual(sum(c == ["mo", "clean"] for c in calls), 1)
@@ -269,7 +352,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         result, calls, _ = self.run_case(
             "run", BREW_OUTDATED="alpha\n",
             MO_PREVIEW="Potential cleanup: 2 GiB\n",
-            DIALOG_ANSWERS="Cancel|OK",
+            DIALOG_ANSWERS="Cancel|Cancel|Cancel|OK",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.matches(calls, "brew", "upgrade"))
@@ -285,8 +368,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         _, calls, _ = self.run_case(
             "run", BREW_OUTDATED="alpha\n", MO_DRY_RUN_FAIL="1",
         )
-        self.assertEqual(self.matches(calls, "brew", "upgrade"),
-                         [["brew", "upgrade", "alpha"]])
+        self.assertIn(["brew", "upgrade", "alpha"], calls)
         self.assertNotIn(["mo", "clean"], calls)
 
     def test_failed_dry_run_must_not_start_clean(self):
@@ -308,6 +390,130 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(["mo", "clean"], calls)
+
+
+    def test_invalid_mode_never_invokes_any_external_command(self):
+        result, calls, _ = self.run_case("brew-batch")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+
+    def test_zero_candidates_approved_brew_runs_greedy_cleanup_autoremove(self):
+        result, calls, _ = self.run_case("run", DIALOG_ANSWERS="OK|Cancel|Cancel")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sequence = [["brew", "upgrade", "--cask", "--greedy"],
+                    ["brew", "cleanup"], ["brew", "autoremove"]]
+        self.assertEqual([c for c in calls if c in sequence], sequence)
+        self.assertNotIn(["brew", "upgrade"], calls)
+
+    def test_normal_brew_candidates_are_deduplicated_before_greedy_recheck(self):
+        result, calls, _ = self.run_case(
+            "run", BREW_OUTDATED="alpha\nalpha\nbeta\n",
+            DIALOG_ANSWERS="OK|Cancel|Cancel")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sequence = [["brew", "upgrade", "alpha", "beta"],
+                    ["brew", "upgrade", "--cask", "--greedy"],
+                    ["brew", "cleanup"], ["brew", "autoremove"]]
+        self.assertEqual([c for c in calls if c in sequence], sequence)
+
+    def test_brew_preflight_failure_skips_all_brew_mutations_but_not_other_tools(self):
+        for flag in ("BREW_UPDATE_FAIL", "BREW_OUTDATED_FAIL"):
+            with self.subTest(flag=flag):
+                result, calls, _ = self.run_case(
+                    "run", MO_PREVIEW="Potential cleanup: 2 GiB\n",
+                    DIALOG_ANSWERS="OK", **{flag: "1"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(c[0] == "brew" and
+                                     c[1:2] in (["upgrade"], ["cleanup"], ["autoremove"])
+                                     for c in calls))
+                self.assertIn(["mas", "upgrade"], calls)
+                self.assertTrue(self.matches(calls, "npm", "install"))
+                self.assertIn(["mo", "clean"], calls)
+
+    def test_each_brew_stage_failure_stops_later_brew_stages_only(self):
+        cases = (
+            ("BREW_UPGRADE_FAIL", [["brew", "upgrade", "alpha"]]),
+            ("BREW_GREEDY_FAIL", [["brew", "upgrade", "alpha"],
+                                  ["brew", "upgrade", "--cask", "--greedy"]]),
+            ("BREW_CLEANUP_FAIL", [["brew", "upgrade", "alpha"],
+                                   ["brew", "upgrade", "--cask", "--greedy"],
+                                   ["brew", "cleanup"]]),
+            ("BREW_AUTOREMOVE_FAIL", [["brew", "upgrade", "alpha"],
+                                      ["brew", "upgrade", "--cask", "--greedy"],
+                                      ["brew", "cleanup"], ["brew", "autoremove"]]),
+        )
+        for flag, expected in cases:
+            with self.subTest(flag=flag):
+                result, calls, _ = self.run_case(
+                    "run", BREW_OUTDATED="alpha\n",
+                    DIALOG_ANSWERS="OK", **{flag: "1"})
+                self.assertNotEqual(result.returncode, 0)
+                actual = [c for c in calls if c[0] == "brew"
+                          and c[1:2] in (["upgrade"], ["cleanup"], ["autoremove"])]
+                self.assertEqual(actual, expected)
+                self.assertIn(["mas", "upgrade"], calls)
+                self.assertTrue(self.matches(calls, "npm", "install"))
+
+    def test_mas_and_npm_are_independently_approved(self):
+        for answers, mas_expected, npm_expected in (
+            ("Cancel|OK|Cancel", True, False),
+            ("Cancel|Cancel|OK", False, True),
+            ("Cancel|unexpected|OK", False, True),
+            ("Cancel|OK|unexpected", True, False),
+        ):
+            with self.subTest(answers=answers):
+                _, calls, _ = self.run_case("run", DIALOG_ANSWERS=answers)
+                self.assertEqual(["mas", "upgrade"] in calls, mas_expected)
+                self.assertEqual(bool(self.matches(calls, "npm", "install")), npm_expected)
+                self.assertEqual(len(self.dialogs(calls)), 3)
+
+    def test_mas_or_npm_failure_does_not_block_mole(self):
+        for flag in ("MAS_FAIL", "NPM_FAIL"):
+            with self.subTest(flag=flag):
+                result, calls, _ = self.run_case(
+                    "run", MO_PREVIEW="Potential cleanup: 2 GiB\n",
+                    DIALOG_ANSWERS="Cancel|OK|OK|OK", **{flag: "1"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(["mas", "upgrade"], calls)
+                self.assertTrue(self.matches(calls, "npm", "install"))
+                self.assertIn(["mo", "clean"], calls)
+
+    def test_npm_full_legacy_package_scope_and_cli_flags(self):
+        result, calls, _ = self.run_case("run", DIALOG_ANSWERS="Cancel|Cancel|OK")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.matches(calls, "npm", "install"), [[
+            "npm", "install", "--global", "--no-audit", "--no-fund",
+            *(name + "@latest" for name in EXPECTED_TEXTLINT_PACKAGES),
+        ]])
+        self.assertEqual(len(set(EXPECTED_TEXTLINT_PACKAGES)),
+                         len(EXPECTED_TEXTLINT_PACKAGES))
+        self.assertTrue(all(name in result.stdout for name in EXPECTED_TEXTLINT_PACKAGES))
+
+    def test_unapproved_or_unexpected_dialog_never_modifies_its_section(self):
+        for answer in ("Cancel", "error", "unexpected"):
+            with self.subTest(answer=answer):
+                _, calls, _ = self.run_case("run", BREW_OUTDATED="alpha\n",
+                    DIALOG_ANSWERS=answer + "|Cancel|Cancel")
+                self.assertFalse(any(c[0] == "brew" and
+                                     c[1:2] in (["upgrade"], ["cleanup"], ["autoremove"])
+                                     for c in calls))
+                self.assertFalse(self.destructive(calls))
+
+    def test_all_approval_dialogs_have_no_120_second_timeout(self):
+        _, calls, _ = self.run_case("run", BREW_OUTDATED="alpha\n",
+            MO_PREVIEW="Potential cleanup: 2 GiB\n",
+            DIALOG_ANSWERS="Cancel|Cancel|Cancel|Cancel")
+        self.assertEqual(len(self.dialogs(calls)), 4)
+        for dialog in self.dialogs(calls):
+            self.assertNotIn("giving up after", " ".join(dialog))
+
+    def test_run_reports_each_update_or_cleanup_section(self):
+        result, _, _ = self.run_case("run", BREW_OUTDATED="alpha\n",
+            MO_PREVIEW="Potential cleanup: 2 GiB\n",
+            DIALOG_ANSWERS="OK|Cancel|OK|Cancel")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for label in ("Homebrew", "greedy", "cleanup", "autoremove",
+                      "Mac App Store", "npm", "Mole"):
+            self.assertIn(label.lower(), result.stdout.lower())
 
     def test_plist_schedules_only_check_at_monday_0830(self):
         with PLIST.open("rb") as file:
