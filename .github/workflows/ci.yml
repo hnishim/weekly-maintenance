@@ -11,5 +11,5 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 -m unittest discover -s tests -p 'test_*.py'
       - run: bash -n scripts/weekly-maintenance.sh
-      - run: python3 -c "import plistlib; plistlib.load(open('launchd/com.hnishim.weekly-maintenance.plist','rb'))"
+      - run: python3 -c "import plistlib; plistlib.load(open('launchd/my.launchd.weekly-maintenance.plist','rb'))"
       - run: git diff --check
