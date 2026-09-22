@@ -13,11 +13,10 @@ Homebrewの更新候補とMoleの清掃候補を毎週月曜日8:30に確認し�
 ```
 
 ```bash
-cd "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/launchd/weekly-maintenance"
-./setup.sh
+bash "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Dev/dotfiles/launchd/weekly-maintenance-setup.sh"
 ```
 
-`setup.sh` は、iCloud Drive上のスクリプトをローカル実行領域へコピーし、Homebrew/Moleを解決できるPATHを設定したplistを生成してLaunchAgentへ登録します。ソースを更新した場合は、もう一度 `./setup.sh` を実行してローカル実行コピーを更新してください。
+Dotfiles側のセットアップスクリプトが、iCloud Drive上のスクリプトをローカル実行領域へコピーし、Homebrew/Moleを解決できるPATHを設定したplistを生成してLaunchAgentへ登録します。ソースを更新した場合は、同じセットアップスクリプトをもう一度実行してローカル実行コピーを更新してください。同期と登録の処理はdotfiles側に一本化しています。
 
 登録後の確認専用実行と結果確認は次のとおりです。
 
@@ -38,10 +37,10 @@ bash scripts/weekly-maintenance.sh run
 
 ## 定期起動の登録・解除（Mac実機での受入確認時）
 
-以前の受入失敗候補を登録・実行しないでください。登録はリポジトリの `setup.sh` だけで行います。
+以前の受入失敗候補を登録・実行しないでください。登録はdotfiles側のセットアップスクリプトだけで行います。
 
 ```bash
-./setup.sh
+bash "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Dev/dotfiles/launchd/weekly-maintenance-setup.sh"
 ```
 
 登録後に確認専用モードを実行する場合は次を使います。LaunchAgentからはローカル実行領域のコピーが呼ばれるため、iCloud Drive上のbashスクリプトを直接実行しません。
