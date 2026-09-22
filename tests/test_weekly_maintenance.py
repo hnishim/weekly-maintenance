@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "weekly-maintenance.sh"
-PLIST = ROOT / "launchd" / "com.hnishim.weekly-maintenance.plist"
+PLIST = ROOT / "launchd" / "my.launchd.weekly-maintenance.plist"
 
 FAKE = r'''#!/usr/bin/env python3
 import json

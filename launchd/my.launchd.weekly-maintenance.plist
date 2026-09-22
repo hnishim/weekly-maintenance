@@ -2,11 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.hnishim.weekly-maintenance</string>
+  <key>Label</key><string>my.launchd.weekly-maintenance</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/hnishim/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/launchd/weekly-maintenance/scripts/weekly-maintenance.sh</string>
+    <string>/Users/hnishim/Library/Application Support/my.launchd.weekly-maintenance/weekly-maintenance.sh</string>
     <string>check</string>
   </array>
   <key>StartCalendarInterval</key>
