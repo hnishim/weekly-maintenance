@@ -322,9 +322,9 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         dialogs = self.dialogs(calls)
         self.assertEqual(len(dialogs), 3)
         self.assertIn("greedy", " ".join(dialogs[0]).lower())
-        self.assertIn("cleanup", " ".join(dialogs[0]).lower())
+        self.assertNotIn("cleanup", " ".join(dialogs[0]).lower())
+        self.assertNotIn("autoremove", " ".join(dialogs[0]).lower())
         self.assertFalse(self.destructive(calls))
-
     def test_run_reject_timeout_and_error_never_upgrade(self):
         for answer in ("Cancel", "timeout", "error"):
             with self.subTest(answer=answer):
@@ -410,24 +410,23 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, [])
 
-    def test_zero_candidates_approved_brew_runs_greedy_cleanup_autoremove(self):
+    def test_zero_candidates_approved_brew_runs_only_greedy(self):
         result, calls, _ = self.run_case("run", DIALOG_ANSWERS="OK|Cancel|Cancel")
         self.assertEqual(result.returncode, 0, result.stderr)
-        sequence = [["brew", "upgrade", "--cask", "--greedy"],
-                    ["brew", "cleanup"], ["brew", "autoremove"]]
-        self.assertEqual([c for c in calls if c in sequence], sequence)
-        self.assertNotIn(["brew", "upgrade"], calls)
-
+        self.assertEqual(self.matches(calls, "brew", "upgrade"),
+                         [["brew", "upgrade", "--cask", "--greedy"]])
+        self.assertFalse(self.matches(calls, "brew", "cleanup"))
+        self.assertFalse(self.matches(calls, "brew", "autoremove"))
     def test_normal_brew_candidates_are_deduplicated_before_greedy_recheck(self):
         result, calls, _ = self.run_case(
             "run", BREW_OUTDATED="alpha\nalpha\nbeta\n",
             DIALOG_ANSWERS="OK|Cancel|Cancel")
         self.assertEqual(result.returncode, 0, result.stderr)
-        sequence = [["brew", "upgrade", "alpha", "beta"],
-                    ["brew", "upgrade", "--cask", "--greedy"],
-                    ["brew", "cleanup"], ["brew", "autoremove"]]
-        self.assertEqual([c for c in calls if c in sequence], sequence)
-
+        self.assertEqual(self.matches(calls, "brew", "upgrade"),
+                         [["brew", "upgrade", "alpha", "beta"],
+                          ["brew", "upgrade", "--cask", "--greedy"]])
+        self.assertFalse(self.matches(calls, "brew", "cleanup"))
+        self.assertFalse(self.matches(calls, "brew", "autoremove"))
     def test_brew_preflight_failure_skips_all_brew_mutations_but_not_other_tools(self):
         for flag in ("BREW_UPDATE_FAIL", "BREW_OUTDATED_FAIL"):
             with self.subTest(flag=flag):
@@ -447,12 +446,6 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             ("BREW_UPGRADE_FAIL", [["brew", "upgrade", "alpha"]]),
             ("BREW_GREEDY_FAIL", [["brew", "upgrade", "alpha"],
                                   ["brew", "upgrade", "--cask", "--greedy"]]),
-            ("BREW_CLEANUP_FAIL", [["brew", "upgrade", "alpha"],
-                                   ["brew", "upgrade", "--cask", "--greedy"],
-                                   ["brew", "cleanup"]]),
-            ("BREW_AUTOREMOVE_FAIL", [["brew", "upgrade", "alpha"],
-                                      ["brew", "upgrade", "--cask", "--greedy"],
-                                      ["brew", "cleanup"], ["brew", "autoremove"]]),
         )
         for flag, expected in cases:
             with self.subTest(flag=flag):
@@ -460,12 +453,11 @@ class WeeklyMaintenanceTests(unittest.TestCase):
                     "run", BREW_OUTDATED="alpha\n",
                     DIALOG_ANSWERS="OK", **{flag: "1"})
                 self.assertNotEqual(result.returncode, 0)
-                actual = [c for c in calls if c[0] == "brew"
-                          and c[1:2] in (["upgrade"], ["cleanup"], ["autoremove"])]
-                self.assertEqual(actual, expected)
+                self.assertEqual(self.matches(calls, "brew", "upgrade"), expected)
+                self.assertFalse(self.matches(calls, "brew", "cleanup"))
+                self.assertFalse(self.matches(calls, "brew", "autoremove"))
                 self.assertIn(["mas", "upgrade"], calls)
                 self.assertTrue(self.matches(calls, "npm", "install"))
-
     def test_mas_and_npm_are_independently_approved(self):
         for answers, mas_expected, npm_expected in (
             ("Cancel|OK|Cancel", True, False),
@@ -549,44 +541,71 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             f"section {label!r} must report {expected_status}: {lines!r}"
         )
 
-    def test_run_reports_each_update_or_cleanup_section(self):
-        result, _, _ = self.run_case("run", BREW_OUTDATED="alpha\n",
+    def test_run_reports_each_update_section_without_explicit_brew_cleanup(self):
+        result, calls, _ = self.run_case("run", BREW_OUTDATED="alpha\n",
             MO_PREVIEW="Potential cleanup: 2 GiB\n",
             DIALOG_ANSWERS="OK|Cancel|OK|Cancel")
         self.assertEqual(result.returncode, 0, result.stderr)
-        for label in ("Homebrew", "greedy", "cleanup", "autoremove",
+        for label in ("Homebrew normal", "Homebrew greedy",
                       "Mac App Store", "npm", "Mole"):
             self.assertIn(label.lower(), result.stdout.lower())
-        for label in ("greedy", "cleanup", "autoremove", "npm"):
+        for label in ("Homebrew normal", "Homebrew greedy", "npm"):
             self.assert_section_result(result.stdout, label, "success")
         self.assert_section_result(result.stdout, "Mac App Store", "not_approved")
         self.assert_section_result(result.stdout, "Mole", "not_approved")
-
-    def test_run_reports_failed_brew_stage_and_later_skips_separately(self):
-        result, _, _ = self.run_case(
+        for forbidden in ("Homebrew cleanup:", "Homebrew autoremove:"):
+            self.assertNotIn(forbidden.lower(), result.stdout.lower())
+        self.assertFalse(self.matches(calls, "brew", "cleanup"))
+        self.assertFalse(self.matches(calls, "brew", "autoremove"))
+    def test_run_reports_failed_greedy_and_independent_sections(self):
+        result, calls, _ = self.run_case(
             "run", BREW_OUTDATED="alpha\n", BREW_GREEDY_FAIL="1",
             MO_PREVIEW="Potential cleanup: 2 GiB\n",
             DIALOG_ANSWERS="OK|OK|OK|Cancel")
         self.assertNotEqual(result.returncode, 0)
-        self.assert_section_result(result.stdout, "greedy", "failed")
-        for label in ("cleanup", "autoremove"):
-            self.assert_section_result(result.stdout, label, "skipped")
+        self.assert_section_result(result.stdout, "Homebrew normal", "success")
+        self.assert_section_result(result.stdout, "Homebrew greedy", "failed")
         self.assert_section_result(result.stdout, "Mac App Store", "success")
         self.assert_section_result(result.stdout, "npm", "success")
         self.assert_section_result(result.stdout, "Mole", "not_approved")
-
+        self.assertFalse(self.matches(calls, "brew", "cleanup"))
+        self.assertFalse(self.matches(calls, "brew", "autoremove"))
     def test_run_reports_no_candidates_and_unapproved_sections_separately(self):
-        result, _, _ = self.run_case(
+        result, calls, _ = self.run_case(
             "run", MO_PREVIEW="Potential cleanup: 2 GiB\n",
             DIALOG_ANSWERS="Cancel|Cancel|Cancel|Cancel")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_section_result(result.stdout, "Homebrew", "no_candidates")
-        for label in ("greedy", "cleanup", "autoremove"):
-            self.assert_section_result(result.stdout, label, "not_approved")
+        self.assert_section_result(result.stdout, "Homebrew normal", "no_candidates")
+        self.assert_section_result(result.stdout, "Homebrew greedy", "not_approved")
         self.assert_section_result(result.stdout, "Mac App Store", "not_approved")
         self.assert_section_result(result.stdout, "npm", "not_approved")
         self.assert_section_result(result.stdout, "Mole", "not_approved")
-
+        for forbidden in ("Homebrew cleanup:", "Homebrew autoremove:"):
+            self.assertNotIn(forbidden.lower(), result.stdout.lower())
+        self.assertFalse(self.matches(calls, "brew", "cleanup"))
+        self.assertFalse(self.matches(calls, "brew", "autoremove"))
+    def test_no_explicit_brew_cleanup_or_autoremove_in_any_mode_or_brew_outcome(self):
+        scenarios = (
+            ("check", {}),
+            ("run", {"BREW_OUTDATED": "alpha\n", "DIALOG_ANSWERS": "OK"}),
+            ("run", {"BREW_OUTDATED": "", "DIALOG_ANSWERS": "OK"}),
+            ("run", {"BREW_OUTDATED": "alpha\n", "DIALOG_ANSWERS": "Cancel"}),
+            ("run", {"BREW_UPDATE_FAIL": "1"}),
+            ("run", {"BREW_OUTDATED_FAIL": "1"}),
+            ("run", {"BREW_OUTDATED": "alpha\n", "BREW_UPGRADE_FAIL": "1"}),
+            ("run", {"BREW_OUTDATED": "alpha\n", "BREW_GREEDY_FAIL": "1"}),
+        )
+        for mode, options in scenarios:
+            with self.subTest(mode=mode, options=options):
+                result, calls, _ = self.run_case(mode, **options)
+                self.assertFalse(self.matches(calls, "brew", "cleanup"))
+                self.assertFalse(self.matches(calls, "brew", "autoremove"))
+                for dialog in self.dialogs(calls):
+                    message = dialog[-1].lower()
+                    self.assertNotIn("brew cleanup", message)
+                    self.assertNotIn("brew autoremove", message)
+                self.assertNotIn("Homebrew cleanup:", result.stdout)
+                self.assertNotIn("Homebrew autoremove:", result.stdout)
 
     def test_check_report_quotes_manual_run_path_with_spaces(self):
         result, calls, report = self.run_case(
