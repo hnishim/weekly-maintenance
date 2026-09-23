@@ -33,7 +33,7 @@ cat "$HOME/Library/Logs/weekly-maintenance/last-check.txt"
 bash scripts/weekly-maintenance.sh run
 ```
 
-手動実行時はHomebrewの定義更新・通常候補の再確認後、更新対象と実行範囲を示して承認を求めます。Homebrewの承認範囲は、表示済み通常候補の更新、`brew upgrade --cask --greedy`による追加cask更新、`brew cleanup`による古い版等の削除、`brew autoremove`による不要な依存関係の削除です。通常候補が0件でも後続3操作は対象が生じ得るため、承認が必要です。更新・清掃対象の全件を事前の通常候補から固定するものではありません。前段が失敗した場合はHomebrew内の後続処理を省略します。
+手動実行時はHomebrewの定義更新・通常候補の再確認後、更新対象と実行範囲を示して承認を求めます。Homebrewの承認範囲は、表示済み通常候補の更新と`brew upgrade --cask --greedy`による追加cask更新です。通常候補が0件でもgreedy cask更新は対象が生じ得るため、承認が必要です。更新対象の全件を事前の通常候補から固定するものではありません。通常更新が失敗した場合はgreedy cask更新を省略します。`brew cleanup`と`brew autoremove`は週次スクリプトから明示的に実行せず、Homebrew標準の自動清掃に任せます。
 
 その後、Mac App Store全体の`mas upgrade`と旧スクリプト由来のtextlint関連npmパッケージのグローバル更新を**それぞれ独立して承認**し、最後にMoleの清掃候補を参考表示して独立承認を求めます。Moleの`mo clean`は実行時に再走査し、追加確認・権限要求を省略しません。Cancel・ダイアログ失敗・不明な応答では該当区分の変更処理を実行しません。承認ダイアログには120秒の自動終了期限を設けません。終了時には処理別の成功・失敗・未承認・省略を表示します。
 
