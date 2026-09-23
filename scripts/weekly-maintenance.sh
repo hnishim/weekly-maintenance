@@ -119,8 +119,6 @@ fi
 # does not suppress the independent Mac App Store, npm, or Mole decisions.
 brew_normal="skipped"
 brew_greedy="skipped"
-brew_cleanup="skipped"
-brew_autoremove="skipped"
 mas_result="skipped"
 npm_result="skipped"
 mole_result="skipped"
@@ -137,12 +135,10 @@ if [[ "$brew_ok" -eq 1 ]]; then
     'Homebrew 承認対象・実行順:' \
     '1. 表示した通常候補のみを更新（0件なら省略）。' \
     '2. brew upgrade --cask --greedy: 通常候補にない自動更新対応cask等も含め実行時に再判定して更新。' \
-    '3. brew cleanup: 古いバージョン・ダウンロード等を削除。' \
-    '4. brew autoremove: 不要な依存パッケージを削除。' \
-    '2〜4は通常候補が0件でも対象となる場合があります。全対象をこの候補一覧で固定できません。'
+    '2は通常候補が0件でも対象となる場合があります。全対象をこの候補一覧で固定できません。'
   brew_dialog="Homebrew通常候補: ${package_count}件。$brew_output
 
-承認すると順に (1) 表示した通常候補の更新（0件なら省略）、(2) brew upgrade --cask --greedy（通常候補にないcaskも実行時に再判定）、(3) brew cleanup（古い版・ダウンロード等の削除）、(4) brew autoremove（不要な依存パッケージの削除）を実行します。2〜4は通常候補0件でも作用する場合があり、全対象は候補一覧で固定できません。"
+承認すると順に (1) 表示した通常候補の更新（0件なら省略）、(2) brew upgrade --cask --greedy（通常候補にないcaskも実行時に再判定）を実行します。(2)は通常候補0件でも作用する場合があり、全対象は候補一覧で固定できません。"
   if approval "$brew_dialog"; then
     brew_stages_ok=1
     if [[ "$package_count" -gt 0 ]]; then
@@ -165,40 +161,15 @@ if [[ "$brew_ok" -eq 1 ]]; then
     else
       brew_greedy="skipped (previous Homebrew stage failed)"
     fi
-    if [[ "$brew_stages_ok" -eq 1 ]]; then
-      if brew cleanup; then
-        brew_cleanup="success"
-      else
-        brew_cleanup="failed"
-        brew_stages_ok=0
-        error=1
-      fi
-    else
-      brew_cleanup="skipped (previous Homebrew stage failed)"
-    fi
-    if [[ "$brew_stages_ok" -eq 1 ]]; then
-      if brew autoremove; then
-        brew_autoremove="success"
-      else
-        brew_autoremove="failed"
-        error=1
-      fi
-    else
-      brew_autoremove="skipped (previous Homebrew stage failed)"
-    fi
   else
     if [[ "$package_count" -gt 0 ]]; then
       brew_normal="not approved"
     fi
     brew_greedy="not approved"
-    brew_cleanup="not approved"
-    brew_autoremove="not approved"
   fi
 else
   brew_normal="skipped (Homebrew preflight failed)"
   brew_greedy="skipped (Homebrew preflight failed)"
-  brew_cleanup="skipped (Homebrew preflight failed)"
-  brew_autoremove="skipped (Homebrew preflight failed)"
 fi
 
 printf '%s\n' 'Mac App Store: mas upgrade は実行時に更新可能なアプリ全体を更新します。週次checkに含まれず、個別候補は固定しません。'
@@ -309,8 +280,6 @@ fi
 printf '\n実行結果:\n'
 printf 'Homebrew normal: %s\n' "$brew_normal"
 printf 'Homebrew greedy: %s\n' "$brew_greedy"
-printf 'Homebrew cleanup: %s\n' "$brew_cleanup"
-printf 'Homebrew autoremove: %s\n' "$brew_autoremove"
 printf 'Mac App Store: %s\n' "$mas_result"
 printf 'npm: %s\n' "$npm_result"
 printf 'Mole: %s\n' "$mole_result"
