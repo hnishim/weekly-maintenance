@@ -472,29 +472,30 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertEqual(len(mutations), 1)
         command = mutations[0]
         self.assertTrue("--global" in command or "-g" in command, command)
-        # A global update with no explicit names covers all installed global
-        # packages. A named update/install must cover precisely the discovered
-        # outdated set; a hard-coded legacy textlint list must not pass.
+        # The approved scope includes major upgrades: a bare global "update"
+        # may follow a narrower wanted range on some npm versions. Explicit
+        # @latest specs are required for precisely the discovered packages.
+        self.assertEqual(command[1], "install", command)
         specs = [arg for arg in command[2:] if not arg.startswith("-")]
-        def package_name(spec):
-            if spec.startswith("@"):
-                return spec.rsplit("@", 1)[0] if spec.count("@") > 1 else spec
-            return spec.split("@", 1)[0]
-        if command[1] == "install" or specs:
-            self.assertEqual({package_name(spec) for spec in specs},
-                             {"sample-cli", "@example/lint"}, command)
+        self.assertCountEqual(specs,
+                              ["sample-cli@latest", "@example/lint@latest"],
+                              command)
         self.assertTrue(any(c[0] == "npm" and c[1:2] == ["outdated"]
                             and ("--global" in c or "-g" in c)
                             and "--json" in c for c in calls))
         self.assertTrue(any(c[0] == "npm" and c[1:2] == ["prefix"]
                             and ("--global" in c or "-g" in c) for c in calls))
         messages = "\n".join(c[-1] for c in self.dialogs(calls))
-        for expected in ("sample-cli", "@example/lint", "/tmp/global prefix"):
-            self.assertIn(expected, result.stdout + messages)
         scope = result.stdout + messages
-        self.assertIn("1.1.0", scope)  # compatible version shown
-        self.assertIn("2.0.0", scope)  # available major version shown
-        self.assertTrue("major" in scope.lower() or "メジャー" in scope)
+        for expected in ("sample-cli", "@example/lint", "/tmp/global prefix",
+                         "1.0.0", "1.1.0", "2.0.0", "@latest"):
+            self.assertIn(expected, scope)
+        # The broadest version range must be visible before the user consents,
+        # not merely printed to the terminal after the update has started.
+        self.assertIn("sample-cli", messages)
+        self.assertIn("2.0.0", messages)
+        self.assertTrue("major" in messages.lower() or "メジャー" in messages)
+        self.assertTrue("latest" in messages.lower() or "最新版" in messages)
         script = SCRIPT.read_text(encoding="utf-8")
         self.assertNotIn("TEXTLINT_NPM_PACKAGES", script)
         self.assertNotIn("textlint関連npmパッケージ", script)
