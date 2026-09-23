@@ -16,6 +16,7 @@ brew_ok=0
 mole_ok=0
 mole_has_candidates=0
 packages=()
+package_count=0
 
 collect_brew() {
   if [[ "$mode" == "run" ]]; then
@@ -31,13 +32,18 @@ collect_brew() {
     while IFS= read -r package; do
       [[ -n "$package" ]] || continue
       duplicate=0
-      for existing in "${packages[@]}"; do
-        if [[ "$existing" == "$package" ]]; then
-          duplicate=1
-          break
-        fi
-      done
-      [[ "$duplicate" -eq 1 ]] || packages+=("$package")
+      if [[ "$package_count" -gt 0 ]]; then
+        for existing in "${packages[@]}"; do
+          if [[ "$existing" == "$package" ]]; then
+            duplicate=1
+            break
+          fi
+        done
+      fi
+      if [[ "$duplicate" -eq 0 ]]; then
+        packages+=("$package")
+        package_count=$((package_count + 1))
+      fi
     done <<< "$brew_output"
   else
     printf 'Homebrew: candidate check failed: %s\n' "$brew_output" >&2
@@ -84,8 +90,8 @@ if [[ "$mode" == "check" ]]; then
     error=1
   elif ! {
     printf 'Checked: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
-    printf 'Homebrew: %s\n' "$([[ "$brew_ok" -eq 1 ]] && printf '%s candidates' "${#packages[@]}" || printf 'check failed')"
-    if [[ "$brew_ok" -eq 1 && "${#packages[@]}" -gt 0 ]]; then
+    printf 'Homebrew: %s\n' "$([[ "$brew_ok" -eq 1 ]] && printf '%s candidates' "$package_count" || printf 'check failed')"
+    if [[ "$brew_ok" -eq 1 && "$package_count" -gt 0 ]]; then
       printf '%s\n' "$brew_output"
     fi
     printf 'Mole: %s\n' "$([[ "$mole_ok" -eq 0 ]] && printf 'check failed' || { [[ "$mole_has_candidates" -eq 1 ]] && printf 'candidates found' || printf 'no candidates'; })"
@@ -98,8 +104,8 @@ if [[ "$mode" == "check" ]]; then
     printf 'Could not write check report: %s\n' "$report" >&2
     error=1
   fi
-  if [[ "${#packages[@]}" -gt 0 || "$mole_has_candidates" -eq 1 ]]; then
-    message="Candidates: Homebrew ${#packages[@]}, Mole $([[ "$mole_has_candidates" -eq 1 ]] && printf 'yes' || printf 'no'). Check $report; run manually when convenient."
+  if [[ "$package_count" -gt 0 || "$mole_has_candidates" -eq 1 ]]; then
+    message="Candidates: Homebrew $package_count, Mole $([[ "$mole_has_candidates" -eq 1 ]] && printf 'yes' || printf 'no'). Check $report; run manually when convenient."
     if ! notify "$message"; then
       printf 'macOS notification failed; see %s\n' "$report" >&2
       error=1
@@ -120,8 +126,8 @@ npm_result="skipped"
 mole_result="skipped"
 
 if [[ "$brew_ok" -eq 1 ]]; then
-  if [[ "${#packages[@]}" -gt 0 ]]; then
-    printf 'Homebrew 通常更新候補（%s件）:\n' "${#packages[@]}"
+  if [[ "$package_count" -gt 0 ]]; then
+    printf 'Homebrew 通常更新候補（%s件）:\n' "$package_count"
     printf '  %s\n' "${packages[@]}"
   else
     printf 'Homebrew 通常更新候補: 0件。\n'
@@ -134,12 +140,12 @@ if [[ "$brew_ok" -eq 1 ]]; then
     '3. brew cleanup: 古いバージョン・ダウンロード等を削除。' \
     '4. brew autoremove: 不要な依存パッケージを削除。' \
     '2〜4は通常候補が0件でも対象となる場合があります。全対象をこの候補一覧で固定できません。'
-  brew_dialog="Homebrew通常候補: ${#packages[@]}件。$brew_output
+  brew_dialog="Homebrew通常候補: ${package_count}件。$brew_output
 
 承認すると順に (1) 表示した通常候補の更新（0件なら省略）、(2) brew upgrade --cask --greedy（通常候補にないcaskも実行時に再判定）、(3) brew cleanup（古い版・ダウンロード等の削除）、(4) brew autoremove（不要な依存パッケージの削除）を実行します。2〜4は通常候補0件でも作用する場合があり、全対象は候補一覧で固定できません。"
   if approval "$brew_dialog"; then
     brew_stages_ok=1
-    if [[ "${#packages[@]}" -gt 0 ]]; then
+    if [[ "$package_count" -gt 0 ]]; then
       if brew upgrade "${packages[@]}"; then
         brew_normal="success"
       else
@@ -181,7 +187,7 @@ if [[ "$brew_ok" -eq 1 ]]; then
       brew_autoremove="skipped (previous Homebrew stage failed)"
     fi
   else
-    if [[ "${#packages[@]}" -gt 0 ]]; then
+    if [[ "$package_count" -gt 0 ]]; then
       brew_normal="not approved"
     fi
     brew_greedy="not approved"
