@@ -134,7 +134,14 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             })
             env.update(overrides)
             if overrides.get("TOOL_MISSING") in ("mas", "npm"):
-                env["PATH"] = str(fake_bin) + os.pathsep + "/usr/bin:/bin"
+                # Keep only the utilities required by the script and fake tools.
+                # An inherited /usr/bin may contain real npm on Linux CI.
+                for utility in ("bash", "python3", "dirname", "basename",
+                                "date", "mkdir", "sed", "cut"):
+                    target = shutil.which(utility)
+                    self.assertIsNotNone(target, utility)
+                    (fake_bin / utility).symlink_to(target)
+                env["PATH"] = str(fake_bin)
             args = ["bash", str(source_script), mode]
             result = subprocess.run(
                 args, cwd=ROOT, env=env, text=True, capture_output=True,
@@ -461,14 +468,33 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.matches(calls, "npm", "outdated"))
         self.assertTrue(self.matches(calls, "npm", "prefix"))
-        self.assertEqual(self.npm_mutations(calls), [["npm", "install", "--global", "--no-audit", "--no-fund", "sample-cli@latest", "@example/lint@latest"]])
-        self.assertIn(["npm", "outdated", "--global", "--depth=0", "--json"], calls)
+        mutations = self.npm_mutations(calls)
+        self.assertEqual(len(mutations), 1)
+        command = mutations[0]
+        self.assertTrue("--global" in command or "-g" in command, command)
+        # A global update with no explicit names covers all installed global
+        # packages. A named update/install must cover precisely the discovered
+        # outdated set; a hard-coded legacy textlint list must not pass.
+        specs = [arg for arg in command[2:] if not arg.startswith("-")]
+        def package_name(spec):
+            if spec.startswith("@"):
+                return spec.rsplit("@", 1)[0] if spec.count("@") > 1 else spec
+            return spec.split("@", 1)[0]
+        if command[1] == "install" or specs:
+            self.assertEqual({package_name(spec) for spec in specs},
+                             {"sample-cli", "@example/lint"}, command)
+        self.assertTrue(any(c[0] == "npm" and c[1:2] == ["outdated"]
+                            and ("--global" in c or "-g" in c)
+                            and "--json" in c for c in calls))
+        self.assertTrue(any(c[0] == "npm" and c[1:2] == ["prefix"]
+                            and ("--global" in c or "-g" in c) for c in calls))
         messages = "\n".join(c[-1] for c in self.dialogs(calls))
         for expected in ("sample-cli", "@example/lint", "/tmp/global prefix"):
             self.assertIn(expected, result.stdout + messages)
-        self.assertTrue("2.0.0" in result.stdout + messages or
-                        "major" in (result.stdout + messages).lower() or
-                        "メジャー" in result.stdout + messages)
+        scope = result.stdout + messages
+        self.assertIn("1.1.0", scope)  # compatible version shown
+        self.assertIn("2.0.0", scope)  # available major version shown
+        self.assertTrue("major" in scope.lower() or "メジャー" in scope)
         script = SCRIPT.read_text(encoding="utf-8")
         self.assertNotIn("TEXTLINT_NPM_PACKAGES", script)
         self.assertNotIn("textlint関連npmパッケージ", script)
@@ -606,10 +632,12 @@ class WeeklyMaintenanceTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0)
                 if missing == "mas":
-                    self.assertNotIn(["mas", "upgrade"], calls)
+                    self.assertFalse(self.matches(calls, "mas"),
+                                     "missing mas must never be invoked")
                     self.assertTrue(self.npm_mutations(calls))
                 else:
-                    self.assertEqual(self.npm_mutations(calls), [])
+                    self.assertFalse(self.matches(calls, "npm"),
+                                     "missing npm must never be invoked")
                     self.assertIn(["mas", "upgrade"], calls)
                 self.assertIn(["mo", "clean"], calls)
                 self.assertEqual(len(self.dialogs(calls)), 2)
