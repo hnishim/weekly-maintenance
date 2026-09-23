@@ -144,8 +144,10 @@ if command -v npm >/dev/null 2>&1; then
   fi
 fi
 if [[ "$npm_ok" -eq 0 ]]; then npm_result="skipped (npm unavailable or preflight failed)"; error=1; fi
-brew_scope="Homebrew: 通常候補${package_count}件、greedy更新（通常候補外も再評価）。"
-if [[ "$brew_ok" -eq 0 ]]; then brew_scope="Homebrew: 前提確認失敗のため対象外（実行しない）。"; fi
+brew_scope="Homebrew: 通常候補${package_count}件。
+${brew_output}
+続いてgreedy cask更新（通常候補外も実行時に再評価）。"
+if [[ "$brew_ok" -eq 0 ]]; then brew_scope="Homebrew通常更新・greedy cask: 前提確認失敗のため対象外（実行しない）。"; fi
 mas_scope="Mac App Store: mas upgradeで全更新候補を更新。"
 if [[ "$mas_ok" -eq 0 ]]; then mas_scope="Mac App Store: 未配置のため対象外（実行しない）。"; fi
 npm_scope="npm: global prefix ${npm_prefix}。${npm_count}件を@latestへ更新（メジャー更新を含む）。専用pnpm textlint runtimeは対象外。${npm_summary}"
@@ -169,9 +171,6 @@ if [[ "$brew_ok" -eq 1 ]]; then
     '1. 表示した通常候補のみを更新（0件なら省略）。' \
     '2. brew upgrade --cask --greedy: 通常候補にない自動更新対応cask等も含め実行時に再判定して更新。' \
     '2は通常候補が0件でも対象となる場合があります。全対象をこの候補一覧で固定できません。'
-  brew_dialog="Homebrew通常候補: ${package_count}件。$brew_output
-
-承認すると順に (1) 表示した通常候補の更新（0件なら省略）、(2) brew upgrade --cask --greedy（通常候補にないcaskも実行時に再判定）を実行します。(2)は通常候補0件でも作用する場合があり、全対象は候補一覧で固定できません。"
   if [[ "$batch_approved" -eq 1 ]]; then
     brew_stages_ok=1
     if [[ "$package_count" -gt 0 ]]; then
