@@ -111,6 +111,8 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             source_script = source_dir / "weekly maintenance.sh"
             shutil.copyfile(SCRIPT, source_script)
             for name in ("brew", "mo", "osascript", "mas", "npm"):
+                if name == overrides.get("TOOL_MISSING"):
+                    continue
                 file = fake_bin / name
                 file.write_text(FAKE, encoding="utf-8")
                 file.chmod(0o755)
@@ -131,6 +133,8 @@ class WeeklyMaintenanceTests(unittest.TestCase):
                 "NPM_OUTDATED_JSON": '{"sample-cli":{"current":"1.0.0","wanted":"1.1.0","latest":"2.0.0"}}',
             })
             env.update(overrides)
+            if overrides.get("TOOL_MISSING") in ("mas", "npm"):
+                env["PATH"] = str(fake_bin) + os.pathsep + "/usr/bin:/bin"
             args = ["bash", str(source_script), mode]
             result = subprocess.run(
                 args, cwd=ROOT, env=env, text=True, capture_output=True,
@@ -457,7 +461,8 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.matches(calls, "npm", "outdated"))
         self.assertTrue(self.matches(calls, "npm", "prefix"))
-        self.assertTrue(self.npm_mutations(calls))
+        self.assertEqual(self.npm_mutations(calls), [["npm", "install", "--global", "--no-audit", "--no-fund", "sample-cli@latest", "@example/lint@latest"]])
+        self.assertIn(["npm", "outdated", "--global", "--depth=0", "--json"], calls)
         messages = "\n".join(c[-1] for c in self.dialogs(calls))
         for expected in ("sample-cli", "@example/lint", "/tmp/global prefix"):
             self.assertIn(expected, result.stdout + messages)
@@ -601,7 +606,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0)
                 if missing == "mas":
-                    self.assertIn(["mas", "upgrade"], calls)
+                    self.assertNotIn(["mas", "upgrade"], calls)
                     self.assertTrue(self.npm_mutations(calls))
                 else:
                     self.assertEqual(self.npm_mutations(calls), [])
@@ -665,6 +670,8 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         dialog = " ".join(dialogs[0]).lower()
         for marker in ("homebrew", "greedy", "mas", "npm"):
             self.assertIn(marker, dialog)
+        for marker in ("homebrew", "npm"):
+            self.assertTrue(any(marker in line and any(word in line for word in ("除外", "実行しない", "対象外", "skipped", "excluded")) for line in dialog.splitlines()), f"{marker} not excluded: {dialog}")
         self.assertFalse(self.matches(calls, "brew", "upgrade"))
         self.assertFalse(self.npm_mutations(calls))
         self.assertIn(["mas", "upgrade"], calls)
