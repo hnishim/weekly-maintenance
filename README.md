@@ -33,7 +33,11 @@ cat "$HOME/Library/Logs/weekly-maintenance/last-check.txt"
 bash scripts/weekly-maintenance.sh run
 ```
 
-手動実行時にHomebrewの情報更新と両ツールの候補確認を再実施し、**HomebrewとMoleを別々に承認**します。Homebrewでは現在表示したパッケージ名だけを `brew upgrade` へ渡します。Moleのドライランは参考情報です。通常清掃 `mo clean` は実行時に再走査するため、通知時・確認時とは削除対象が変わり得ます。Mole全体の清掃に承認した後、Mole自身の対話・権限要求を省略せず実行します。拒否・無応答・確認失敗ではその処理を実行しません。清掃対象を個々のファイル単位で固定・承認する機構ではありません。
+手動実行時はHomebrewの定義更新・通常候補の再確認後、更新対象と実行範囲を示して承認を求めます。Homebrewの承認範囲は、表示済み通常候補の更新と`brew upgrade --cask --greedy`による追加cask更新です。通常候補が0件でもgreedy cask更新は対象が生じ得るため、承認が必要です。更新対象の全件を事前の通常候補から固定するものではありません。通常更新が失敗した場合はgreedy cask更新を省略します。`brew cleanup`と`brew autoremove`は週次スクリプトから明示的に実行せず、Homebrew標準の自動清掃に任せます。
+
+Homebrewの通常更新・greedy cask更新、Mac App Store全体の`mas upgrade`、インストール済みグローバルnpmパッケージの更新を**1回の包括承認**で実行します。npmは実行時に`npm outdated --global --depth=0 --json`で候補を確認し、グローバルのインストール先と現在・互換範囲・最新版を表示したうえで、候補を`@latest`へ更新します（メジャーバージョン更新を含みます）。専用のpnpm管理textlint実行環境は更新対象に含めません。前提確認に失敗した区分は承認対象から除外し、実行しません。最後にMoleの清掃候補を参考表示して**Moleだけ独立承認**を求めます。Moleの`mo clean`は実行時に再走査し、追加確認・権限要求を省略しません。Cancel・ダイアログ失敗・不明な応答では該当区分の変更処理を実行しません。承認ダイアログには120秒の自動終了期限を設けません。終了時には処理別の成功・失敗・未承認・省略を表示します。
+
+旧`scripts-commands/brew-upgrade.sh`のRaycast起動経路は退役し、更新処理本体はこの`weekly-maintenance.sh`のみです。通知からの起動操作は別Issueで対応します。実行用コピーの更新には上記のdotfilesセットアップを再実行し、旧版を新しいものに入れ替えてください。定期LaunchAgentは引き続き月曜8:30の`check`専用です。
 
 ## 定期起動の登録・解除（Mac実機での受入確認時）
 
@@ -66,4 +70,4 @@ bash -n scripts/weekly-maintenance.sh
 plutil -lint launchd/my.launchd.weekly-maintenance.plist
 ```
 
-自動テストでは `brew`・`mo`・`osascript` を模擬しており、実データの更新や削除は行いません。Mac実機で、通知センターへの表示、結果保存、承認ダイアログ、Mole通常清掃時の追加確認・権限要求、登録・解除・月曜8:30・スリープ復帰を別途確認してください。通常清掃は実データの削除を伴うため、対象と影響を確認してから明示的に実行してください。
+自動テストでは `brew`・`mas`・`npm`・`mo`・`osascript` を模擬しており、実データの更新や削除は行いません。Mac実機で、通知センターへの表示、結果保存、承認ダイアログ、Mole通常清掃時の追加確認・権限要求、登録・解除・月曜8:30・スリープ復帰を別途確認してください。通常清掃は実データの削除を伴うため、対象と影響を確認してから明示的に実行してください。
