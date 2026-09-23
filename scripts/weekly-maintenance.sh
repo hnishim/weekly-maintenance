@@ -115,14 +115,47 @@ if [[ "$mode" == "check" ]]; then
 fi
 
 
-# Update sections keep separate approval and result records. A failed section
-# does not suppress the independent Mac App Store, npm, or Mole decisions.
 brew_normal="skipped"
 brew_greedy="skipped"
 mas_result="skipped"
 npm_result="skipped"
 mole_result="skipped"
-
+mas_ok=0
+npm_ok=0
+npm_specs=()
+npm_count=0
+npm_prefix=""
+npm_summary=""
+if command -v mas >/dev/null 2>&1; then mas_ok=1; else mas_result="skipped (mas unavailable)"; error=1; fi
+if command -v npm >/dev/null 2>&1; then
+  if npm_prefix="$(npm prefix --global)" && [[ -n "$npm_prefix" ]]; then
+    npm_json="$(npm outdated --global --depth=0 --json 2>/dev/null)"
+    npm_exit=$?
+    if [[ "$npm_exit" -le 1 ]]; then
+      npm_summary="$(printf '%s' "$npm_json" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert isinstance(d,dict); [print("{}\t{}\t{}\t{}".format(k,v.get("current","?"),v.get("wanted","?"),v.get("latest","?"))) for k,v in d.items() if isinstance(v,dict)]')" && npm_ok=1
+      if [[ "$npm_ok" -eq 1 && -n "$npm_summary" ]]; then
+        while IFS=$'\t' read -r name current wanted latest; do
+          [[ -n "$name" ]] || continue
+          npm_specs+=("${name}@latest")
+          npm_count=$((npm_count + 1))
+        done <<< "$npm_summary"
+      elif [[ "$npm_ok" -eq 1 ]]; then npm_result="no candidates"; fi
+    fi
+  fi
+fi
+if [[ "$npm_ok" -eq 0 ]]; then npm_result="skipped (npm unavailable or preflight failed)"; error=1; fi
+brew_scope="Homebrew: 通常候補${package_count}件、greedy更新（通常候補外も再評価）。"
+if [[ "$brew_ok" -eq 0 ]]; then brew_scope="Homebrew: 前提確認失敗のため対象外（実行しない）。"; fi
+mas_scope="Mac App Store: mas upgradeで全更新候補を更新。"
+if [[ "$mas_ok" -eq 0 ]]; then mas_scope="Mac App Store: 未配置のため対象外（実行しない）。"; fi
+npm_scope="npm: global prefix ${npm_prefix}。${npm_count}件を@latestへ更新（メジャー更新を含む）。専用pnpm textlint runtimeは対象外。${npm_summary}"
+if [[ "$npm_ok" -eq 0 ]]; then npm_scope="npm: 前提確認失敗のため対象外（実行しない）。"; fi
+printf '%s\n' "$brew_scope" "$mas_scope" "$npm_scope"
+batch_approved=0
+if approval "更新処理を一括承認しますか？
+${brew_scope}
+${mas_scope}
+${npm_scope}"; then batch_approved=1; fi
 if [[ "$brew_ok" -eq 1 ]]; then
   if [[ "$package_count" -gt 0 ]]; then
     printf 'Homebrew 通常更新候補（%s件）:\n' "$package_count"
@@ -139,7 +172,7 @@ if [[ "$brew_ok" -eq 1 ]]; then
   brew_dialog="Homebrew通常候補: ${package_count}件。$brew_output
 
 承認すると順に (1) 表示した通常候補の更新（0件なら省略）、(2) brew upgrade --cask --greedy（通常候補にないcaskも実行時に再判定）を実行します。(2)は通常候補0件でも作用する場合があり、全対象は候補一覧で固定できません。"
-  if approval "$brew_dialog"; then
+  if [[ "$batch_approved" -eq 1 ]]; then
     brew_stages_ok=1
     if [[ "$package_count" -gt 0 ]]; then
       if brew upgrade "${packages[@]}"; then
@@ -172,89 +205,12 @@ else
   brew_greedy="skipped (Homebrew preflight failed)"
 fi
 
-printf '%s\n' 'Mac App Store: mas upgrade は実行時に更新可能なアプリ全体を更新します。週次checkに含まれず、個別候補は固定しません。'
-if approval 'Mac App Store: mas upgradeで実行時に更新可能なアプリ全体を更新します。週次checkに含まれず、個別候補は固定しません。実行しますか？'; then
-  if mas upgrade; then
-    mas_result="success"
-  else
-    mas_result="failed"
-    error=1
-  fi
-else
-  mas_result="not approved"
-fi
-
-TEXTLINT_NPM_PACKAGES=(
-    "textlint"
-    "@textlint-ja/textlint-rule-no-dropping-i"
-    "@textlint-ja/textlint-rule-no-filler"
-    "@textlint-ja/textlint-rule-no-insert-dropping-sa"
-    "@textlint-ja/textlint-rule-no-insert-re"
-    "@textlint-ja/textlint-rule-no-synonyms"
-    "@textlint-ja/textlint-rule-preset-ai-writing"
-    "@textlint-rule/textlint-rule-no-unmatched-pair"
-    "textlint-rule-abbr-within-parentheses"
-    "textlint-rule-alive-link"
-    "textlint-rule-common-misspellings"
-    "textlint-rule-date-weekday-mismatch"
-    "textlint-rule-doubled-spaces"
-    "textlint-rule-en-capitalization"
-    "textlint-rule-en-max-word-count"
-    "textlint-rule-ja-hiragana-fukushi"
-    "textlint-rule-ja-hiragana-hojodoushi"
-    "textlint-rule-ja-hiragana-keishikimeishi"
-    "textlint-rule-ja-no-abusage"
-    "textlint-rule-ja-no-inappropriate-words"
-    "textlint-rule-ja-no-orthographic-variants"
-    "textlint-rule-ja-no-redundant-expression"
-    "textlint-rule-ja-no-successive-word"
-    "textlint-rule-ja-overlooked-typo"
-    "textlint-rule-ja-unnatural-alphabet"
-    "textlint-rule-no-dead-link"
-    "textlint-rule-no-double-negative-ja"
-    "textlint-rule-no-doubled-conjunction"
-    "textlint-rule-no-doubled-conjunctive-particle-ga"
-    "textlint-rule-no-doubled-joshi"
-    "textlint-rule-no-dropping-the-ra"
-    "textlint-rule-no-empty-element"
-    "textlint-rule-no-empty-section"
-    "textlint-rule-no-hankaku-kana"
-    "textlint-rule-no-kangxi-radicals"
-    "textlint-rule-no-mix-dearu-desumasu"
-    "textlint-rule-no-nfd"
-    "textlint-rule-no-start-duplicated-conjunction"
-    "textlint-rule-no-todo"
-    "textlint-rule-no-zero-width-spaces"
-    "textlint-rule-period-in-header"
-    "textlint-rule-period-in-list-item"
-    "textlint-rule-prefer-tari-tari"
-    "textlint-rule-preset-ja-spacing"
-    "textlint-rule-preset-ja-technical-writing"
-    "textlint-rule-preset-japanese"
-    "textlint-rule-preset-jtf-style"
-    "textlint-rule-prh"
-    "textlint-rule-sentence-length"
-    "textlint-rule-spelling"
-    "textlint-rule-terminology"
-)
-
-printf 'textlint関連npmパッケージ: %s件。グローバルに各@latestをインストールします。\n' "${#TEXTLINT_NPM_PACKAGES[@]}"
-printf '  %s\n' "${TEXTLINT_NPM_PACKAGES[@]}"
-if approval "textlint関連npmパッケージ${#TEXTLINT_NPM_PACKAGES[@]}件をグローバルに各@latestへ更新します。全対象名はターミナルの一覧を確認してください。実行しますか？"; then
-  npm_specs=()
-  for name in "${TEXTLINT_NPM_PACKAGES[@]}"; do
-    npm_specs+=("${name}@latest")
-  done
-  if npm install --global --no-audit --no-fund "${npm_specs[@]}"; then
-    npm_result="success"
-  else
-    npm_result="failed"
-    error=1
-  fi
-else
-  npm_result="not approved"
-fi
-
+if [[ "$batch_approved" -eq 1 && "$mas_ok" -eq 1 ]]; then
+  if mas upgrade; then mas_result="success"; else mas_result="failed"; error=1; fi
+elif [[ "$batch_approved" -eq 0 && "$mas_ok" -eq 1 ]]; then mas_result="not approved"; fi
+if [[ "$batch_approved" -eq 1 && "$npm_ok" -eq 1 && "$npm_count" -gt 0 ]]; then
+  if npm install --global --no-audit --no-fund "${npm_specs[@]}"; then npm_result="success"; else npm_result="failed"; error=1; fi
+elif [[ "$batch_approved" -eq 0 && "$npm_ok" -eq 1 && "$npm_count" -gt 0 ]]; then npm_result="not approved"; fi
 if [[ "$mole_ok" -eq 1 && "$mole_has_candidates" -eq 1 ]]; then
   printf 'Mole 現在のドライラン（参考情報）:\n%s\n' "$mole_output"
   summary="$(printf '%s\n' "$mole_output" | sed -n '1,8p' | cut -c 1-100)"
