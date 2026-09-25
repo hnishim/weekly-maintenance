@@ -77,9 +77,12 @@ approval() {
 }
 notify() {
   local message="$1"
-  osascript -e 'on run argv' \
-    -e 'display notification (item 1 of argv) with title "Weekly Maintenance"' \
-    -e 'end run' "$message"
+  if ! command -v terminal-notifier >/dev/null 2>&1; then
+    printf 'terminal-notifier is unavailable; install it and retry, or use the manual entry.\n' >&2
+    return 1
+  fi
+  terminal-notifier -title "Weekly Maintenance" -message "$message" \
+    -open 'warp://tab_config/weekly-maintenance'
 }
 
 collect_brew
@@ -99,6 +102,7 @@ if [[ "$mode" == "check" ]]; then
       printf '%s\n' "$mole_output"
     fi
     printf '\nManual execution (rechecks current candidates, asks separately):\n'
+    printf "open 'warp://tab_config/weekly-maintenance'\\n"
     printf 'bash %q run\n' "$script_path"
   } > "$report"; then
     printf 'Could not write check report: %s\n' "$report" >&2
