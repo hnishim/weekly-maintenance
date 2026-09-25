@@ -277,7 +277,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertIn("open 'warp://tab_config/weekly-maintenance'", report)
         self.assertIn("bash ", report)
         self.assertIn("run", report)
-        self.assertIn("source script with spaces", report)
+        self.assertIn("source\\ script\\ with\\ spaces/weekly\\ maintenance.sh run", report)
         notifications = self.matches(calls, "terminal-notifier")
         self.assertEqual(len(notifications), 1)
         self.assertEqual(
