@@ -4,6 +4,7 @@ on:
     branches:
       - hir-293-v2-tests
       - hir-307-*
+      - hir-312-*
   workflow_dispatch:
 jobs:
   tests:
