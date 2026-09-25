@@ -138,7 +138,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
                 "NPM_OUTDATED_JSON": '{"sample-cli":{"current":"1.0.0","wanted":"1.1.0","latest":"2.0.0"}}',
             })
             env.update(overrides)
-            if overrides.get("TOOL_MISSING") in ("mas", "npm"):
+            if overrides.get("TOOL_MISSING") in ("mas", "npm", "terminal-notifier"):
                 # Keep only the utilities required by the script and fake tools.
                 # An inherited /usr/bin may contain real npm on Linux CI.
                 for utility in ("bash", "python3", "dirname", "basename",
@@ -249,12 +249,16 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assert_check_never_updates_or_prompts(calls)
 
     def test_failed_notification_still_keeps_last_check(self):
-        _, calls, report = self.run_case(
+        result, calls, report = self.run_case(
             "check", BREW_OUTDATED="alpha\n", NOTIFICATION_FAIL="1",
         )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("macOS notification failed", result.stderr)
         self.assertTrue(self.matches(calls, "terminal-notifier"))
         self.assertIsNotNone(report)
         self.assertIn("alpha", report)
+        self.assertIn("open 'warp://tab_config/weekly-maintenance'", report)
+        self.assertIn("bash ", report)
         self.assert_check_never_updates_or_prompts(calls)
 
     def test_check_failure_does_not_trigger_modification(self):
@@ -284,12 +288,17 @@ class WeeklyMaintenanceTests(unittest.TestCase):
 
     def test_unavailable_notifier_reports_failure_but_preserves_manual_entry(self):
         result, calls, report = self.run_case(
-            "check", BREW_OUTDATED="alpha\n", NOTIFIER_UNAVAILABLE="1",
+            "check", BREW_OUTDATED="alpha\n", TOOL_MISSING="terminal-notifier",
         )
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("macOS notification failed", result.stderr)
+        self.assertIn("terminal-notifier", result.stderr)
+        self.assertFalse(self.matches(calls, "terminal-notifier"))
         self.assertIsNotNone(report)
+        self.assertIn("alpha", report)
         self.assertIn("open 'warp://tab_config/weekly-maintenance'", report)
         self.assertIn("bash ", report)
+        self.assertIn("run", report)
         self.assert_check_never_updates_or_prompts(calls)
 
     def test_run_rechecks_current_brew_candidates_and_upgrades_named_set(self):
