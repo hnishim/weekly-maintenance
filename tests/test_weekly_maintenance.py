@@ -24,8 +24,6 @@ from pathlib import Path
 
 name = Path(sys.argv[0]).name
 args = sys.argv[1:]
-if os.environ.get("HIR312_TRACE_COMMANDS") == "1":
-    print("[HIR312-CALL] " + " ".join([name, *args]), flush=True)
 with open(os.environ["TEST_CALL_LOG"], "a", encoding="utf-8") as file:
     file.write(json.dumps([name, *args]) + "\n")
 
@@ -235,7 +233,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
     def test_confirm_run_exact_yes_continues_into_run_approval(self):
         result, calls, _ = self.run_case(
             "confirm-run", stdin_text="yes\n", BREW_OUTDATED="alpha\n",
-            HIR312_TRACE_COMMANDS="1",
+            MO_PREVIEW="Potential cleanup: 2 GiB\n",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.matches(calls, "brew", "update"))
@@ -243,49 +241,59 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertTrue(self.matches(calls, "mo", "clean", "--dry-run"))
         self.assertEqual(len(self.dialogs(calls)), 2)
         self.assertIn(["brew", "upgrade", "alpha"], calls)
-        output = result.stdout
-        self.assert_progress_precedes_call(
-            output, "開始してよければ yes を入力してください。", "brew update",
+        self.assertTrue(self.matches(calls, "npm", "prefix", "--global"))
+        self.assertTrue(self.matches(calls, "npm", "outdated", "--global", "--depth=0", "--json"))
+        self.assertTrue(any("更新処理を一括承認" in " ".join(c) for c in self.dialogs(calls)))
+        self.assertTrue(any("Mole 現在の清掃候補" in " ".join(c) for c in self.dialogs(calls)))
+        self.assert_progress_stdout_order(result.stdout, (
+            "開始してよければ yes を入力してください。",
+            "Homebrew更新候補を確認します。",
+            "Mole清掃候補を確認します。",
+            "グローバルnpm更新候補を確認します。",
+            "一括承認を求めます。",
+            "Mole独立承認を求めます。",
+        ))
+        self.assert_progress_source_order(
+            "開始してよければ yes を入力してください。", "read -r",
         )
-        self.assert_progress_precedes_call(
-            output, "Homebrew更新候補を確認します。", "brew update",
+        self.assert_progress_source_order(
+            "Homebrew更新候補を確認します。", "brew update",
         )
-        self.assert_progress_precedes_call(
-            output, "Homebrew更新候補を確認します。", "brew outdated --quiet",
+        self.assert_progress_source_order(
+            "Homebrew更新候補を確認します。", "brew outdated --quiet",
         )
-        self.assert_progress_precedes_call(
-            output, "Mole清掃候補を確認します。", "mo clean --dry-run",
+        self.assert_progress_source_order(
+            "Mole清掃候補を確認します。", "mo clean --dry-run",
         )
-        self.assert_progress_precedes_call(
-            output, "グローバルnpm更新候補を確認します。", "npm prefix --global",
+        self.assert_progress_source_order(
+            "グローバルnpm更新候補を確認します。", "npm prefix --global",
         )
-        self.assert_progress_precedes_call(
-            output, "グローバルnpm更新候補を確認します。",
+        self.assert_progress_source_order(
+            "グローバルnpm更新候補を確認します。",
             "npm outdated --global --depth=0 --json",
         )
-        self.assert_progress_precedes_call(
-            output, "一括承認を求めます。", "osascript -e on run argv",
+        self.assert_progress_source_order(
+            "一括承認を求めます。", 'approval "更新処理を一括承認しますか?',
         )
-        self.assert_progress_precedes_call(
-            output, "Mole独立承認を求めます。", "osascript -e on run argv",
-            occurrence=2,
+        self.assert_progress_source_order(
+            "Mole独立承認を求めます。", 'approval "Mole 現在の清掃候補',
         )
 
-    def assert_progress_precedes_call(self, output, progress, command, occurrence=1):
-        progress_at = output.find(progress)
-        call_marker = "[HIR312-CALL] " + command
-        call_at = -1
-        search_from = 0
-        for _ in range(occurrence):
-            call_at = output.find(call_marker, search_from)
-            if call_at < 0:
-                break
-            search_from = call_at + len(call_marker)
+    def assert_progress_source_order(self, progress, command):
+        source = SCRIPT.read_text(encoding="utf-8")
+        progress_at = source.find(progress)
         self.assertGreaterEqual(progress_at, 0, f"Missing progress marker: {progress}")
-        self.assertGreaterEqual(
-            call_at, 0, f"Missing traced command occurrence {occurrence}: {command}",
-        )
-        self.assertLess(progress_at, call_at, f"{progress} must precede {command}")
+        command_at = source.find(command, progress_at + len(progress))
+        self.assertGreaterEqual(command_at, 0, f"Missing command boundary: {command}")
+        self.assertLess(progress_at, command_at, f"{progress} must precede {command}")
+
+    def assert_progress_stdout_order(self, output, markers):
+        previous_at = -1
+        for marker in markers:
+            marker_at = output.find(marker)
+            self.assertGreaterEqual(marker_at, 0, f"Missing runtime progress marker: {marker}")
+            self.assertGreater(marker_at, previous_at, f"Unexpected progress order at: {marker}")
+            previous_at = marker_at
 
     def test_check_notifies_for_mole_candidates_without_brew_candidates(self):
         result, calls, report = self.run_case(
