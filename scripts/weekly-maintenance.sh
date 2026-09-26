@@ -3,6 +3,18 @@
 set -u
 export HOMEBREW_NO_AUTO_UPDATE=1
 mode="${1:-}"
+if [[ "$mode" == "confirm-run" ]]; then
+  printf '開始してよければ yes を入力してください。\n'
+  if ! IFS= read -r confirmation; then
+    printf '\n開始をキャンセルしました（入力を受け取れませんでした）。\n'
+    exit 0
+  fi
+  if [[ "$confirmation" != "yes" ]]; then
+    printf '開始をキャンセルしました。\n'
+    exit 0
+  fi
+  mode="run"
+fi
 if [[ "$mode" != "check" && "$mode" != "run" ]]; then
   printf 'Usage: %s {check|run}\n' "$0" >&2
   exit 2
@@ -19,6 +31,7 @@ packages=()
 package_count=0
 
 collect_brew() {
+  printf 'Homebrew更新候補を確認します。\n'
   if [[ "$mode" == "run" ]]; then
     printf 'Homebrew: brew update は更新候補を確認するための定義更新です（アプリ自体は更新しません）。\n'
     if ! brew update; then
@@ -51,6 +64,7 @@ collect_brew() {
   fi
 }
 collect_mole() {
+  printf 'Mole清掃候補を確認します。\n'
   if mole_output="$(mo clean --dry-run)"; then
     mole_ok=1
     # Mole emits a summary even when there is no reclaimable space.
@@ -130,6 +144,7 @@ npm_specs=()
 npm_count=0
 npm_prefix=""
 npm_summary=""
+printf 'グローバルnpm更新候補を確認します。\n'
 if command -v mas >/dev/null 2>&1; then mas_ok=1; else mas_result="skipped (mas unavailable)"; error=1; fi
 if command -v npm >/dev/null 2>&1; then
   if npm_prefix="$(npm prefix --global)" && [[ -n "$npm_prefix" ]]; then
@@ -158,7 +173,8 @@ npm_scope="npm: global prefix ${npm_prefix}。${npm_count}件を@latestへ更新
 if [[ "$npm_ok" -eq 0 ]]; then npm_scope="npm: 前提確認失敗のため対象外（実行しない）。"; fi
 printf '%s\n' "$brew_scope" "$mas_scope" "$npm_scope"
 batch_approved=0
-if approval "更新処理を一括承認しますか？
+printf '一括承認を求めます。\n'
+if approval "更新処理を一括承認しますか?
 ${brew_scope}
 ${mas_scope}
 ${npm_scope}"; then batch_approved=1; fi
@@ -217,6 +233,7 @@ elif [[ "$batch_approved" -eq 0 && "$npm_ok" -eq 1 && "$npm_count" -gt 0 ]]; the
 if [[ "$mole_ok" -eq 1 && "$mole_has_candidates" -eq 1 ]]; then
   printf 'Mole 現在のドライラン（参考情報）:\n%s\n' "$mole_output"
   summary="$(printf '%s\n' "$mole_output" | sed -n '1,8p' | cut -c 1-100)"
+  printf 'Mole独立承認を求めます。\n'
   if approval "Mole 現在の清掃候補（参考）: $summary
 
 実際のmo cleanは実行時に再走査し、削除対象が変わる場合があります。Mole自身の追加確認・権限要求を含む通常清掃を承認しますか？"; then
