@@ -24,6 +24,8 @@ from pathlib import Path
 
 name = Path(sys.argv[0]).name
 args = sys.argv[1:]
+if os.environ.get("HIR312_TRACE_COMMANDS") == "1":
+    print("[HIR312-CALL] " + " ".join([name, *args]), flush=True)
 with open(os.environ["TEST_CALL_LOG"], "a", encoding="utf-8") as file:
     file.write(json.dumps([name, *args]) + "\n")
 
@@ -106,7 +108,7 @@ elif name == "osascript":
 '''
 
 class WeeklyMaintenanceTests(unittest.TestCase):
-    def run_case(self, mode, initial_report=None, **overrides):
+    def run_case(self, mode, initial_report=None, stdin_text=None, **overrides):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             fake_bin = base / "bin"
@@ -150,7 +152,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             args = ["bash", str(source_script), mode]
             result = subprocess.run(
                 args, cwd=ROOT, env=env, text=True, capture_output=True,
-                timeout=30,
+                input=stdin_text, timeout=30,
             )
             calls = [json.loads(line) for line in call_log.read_text().splitlines()]
             content = report.read_text(encoding="utf-8") if report.exists() else None
@@ -221,6 +223,69 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertIn("beta", report)
         self.assertIn("run", report)
         self.assert_check_never_updates_or_prompts(calls)
+
+    def test_confirm_run_requires_exact_yes_before_any_external_call(self):
+        for answer in ("no\n", "y\n", "YES\n", "yes please\n", ""):
+            with self.subTest(answer=answer):
+                result, calls, _ = self.run_case("confirm-run", stdin_text=answer)
+                self.assertEqual(calls, [])
+                self.assertRegex(result.stdout + result.stderr, r"(?i)(cancel|キャンセル)")
+                self.assertNotIn("Usage:", result.stdout + result.stderr)
+
+    def test_confirm_run_exact_yes_continues_into_run_approval(self):
+        result, calls, _ = self.run_case(
+            "confirm-run", stdin_text="yes\n", BREW_OUTDATED="alpha\n",
+            HIR312_TRACE_COMMANDS="1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.matches(calls, "brew", "update"))
+        self.assertTrue(self.matches(calls, "brew", "outdated"))
+        self.assertTrue(self.matches(calls, "mo", "clean", "--dry-run"))
+        self.assertEqual(len(self.dialogs(calls)), 2)
+        self.assertIn(["brew", "upgrade", "alpha"], calls)
+        output = result.stdout
+        self.assert_progress_precedes_call(
+            output, "開始してよければ yes を入力してください。", "brew update",
+        )
+        self.assert_progress_precedes_call(
+            output, "Homebrew更新候補を確認します。", "brew update",
+        )
+        self.assert_progress_precedes_call(
+            output, "Homebrew更新候補を確認します。", "brew outdated --quiet",
+        )
+        self.assert_progress_precedes_call(
+            output, "Mole清掃候補を確認します。", "mo clean --dry-run",
+        )
+        self.assert_progress_precedes_call(
+            output, "グローバルnpm更新候補を確認します。", "npm prefix --global",
+        )
+        self.assert_progress_precedes_call(
+            output, "グローバルnpm更新候補を確認します。",
+            "npm outdated --global --depth=0 --json",
+        )
+        self.assert_progress_precedes_call(
+            output, "一括承認を求めます。", "osascript -e on run argv",
+        )
+        self.assert_progress_precedes_call(
+            output, "Mole独立承認を求めます。", "osascript -e on run argv",
+            occurrence=2,
+        )
+
+    def assert_progress_precedes_call(self, output, progress, command, occurrence=1):
+        progress_at = output.find(progress)
+        call_marker = "[HIR312-CALL] " + command
+        call_at = -1
+        search_from = 0
+        for _ in range(occurrence):
+            call_at = output.find(call_marker, search_from)
+            if call_at < 0:
+                break
+            search_from = call_at + len(call_marker)
+        self.assertGreaterEqual(progress_at, 0, f"Missing progress marker: {progress}")
+        self.assertGreaterEqual(
+            call_at, 0, f"Missing traced command occurrence {occurrence}: {command}",
+        )
+        self.assertLess(progress_at, call_at, f"{progress} must precede {command}")
 
     def test_check_notifies_for_mole_candidates_without_brew_candidates(self):
         result, calls, report = self.run_case(
