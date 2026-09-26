@@ -75,6 +75,11 @@ elif name == "npm":
     elif args and args[0] in ("update", "install"):
         if os.environ.get("NPM_FAIL") == "1":
             sys.exit(18)
+elif name == "terminal-notifier":
+    if os.environ.get("NOTIFICATION_FAIL") == "1":
+        sys.exit(12)
+    if os.environ.get("NOTIFIER_UNAVAILABLE") == "1":
+        sys.exit(127)
 elif name == "osascript":
     script = " ".join(args)
     if "display notification" in script:
@@ -101,7 +106,7 @@ elif name == "osascript":
 '''
 
 class WeeklyMaintenanceTests(unittest.TestCase):
-    def run_case(self, mode, initial_report=None, **overrides):
+    def run_case(self, mode, initial_report=None, stdin_text=None, **overrides):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             fake_bin = base / "bin"
@@ -110,7 +115,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             source_dir.mkdir()
             source_script = source_dir / "weekly maintenance.sh"
             shutil.copyfile(SCRIPT, source_script)
-            for name in ("brew", "mo", "osascript", "mas", "npm"):
+            for name in ("brew", "mo", "osascript", "terminal-notifier", "mas", "npm"):
                 if name == overrides.get("TOOL_MISSING"):
                     continue
                 file = fake_bin / name
@@ -133,7 +138,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
                 "NPM_OUTDATED_JSON": '{"sample-cli":{"current":"1.0.0","wanted":"1.1.0","latest":"2.0.0"}}',
             })
             env.update(overrides)
-            if overrides.get("TOOL_MISSING") in ("mas", "npm"):
+            if overrides.get("TOOL_MISSING") in ("mas", "npm", "terminal-notifier"):
                 # Keep only the utilities required by the script and fake tools.
                 # An inherited /usr/bin may contain real npm on Linux CI.
                 for utility in ("bash", "python3", "dirname", "basename",
@@ -145,7 +150,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             args = ["bash", str(source_script), mode]
             result = subprocess.run(
                 args, cwd=ROOT, env=env, text=True, capture_output=True,
-                timeout=30,
+                input=stdin_text, timeout=30,
             )
             calls = [json.loads(line) for line in call_log.read_text().splitlines()]
             content = report.read_text(encoding="utf-8") if report.exists() else None
@@ -182,6 +187,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         result, calls, report = self.run_case("check")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.matches(calls, "osascript"))
+        self.assertFalse(self.matches(calls, "terminal-notifier"))
         self.assertFalse(self.destructive(calls))
         self.assertFalse(self.matches(calls, "brew", "update"))
         self.assertTrue(self.matches(calls, "brew", "outdated"))
@@ -206,23 +212,98 @@ class WeeklyMaintenanceTests(unittest.TestCase):
             "check", BREW_OUTDATED="alpha\nbeta\n",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        notifications = self.matches(calls, "osascript")
+        notifications = self.matches(calls, "terminal-notifier")
         self.assertEqual(len(notifications), 1)
-        self.assertIn("display notification", " ".join(notifications[0]))
+        self.assertIn("-open", notifications[0])
+        self.assertIn("warp://tab_config/weekly-maintenance", notifications[0])
         self.assertNotIn("display dialog", " ".join(notifications[0]))
         self.assertIn("alpha", report)
         self.assertIn("beta", report)
         self.assertIn("run", report)
         self.assert_check_never_updates_or_prompts(calls)
 
+    def test_confirm_run_requires_exact_yes_before_any_external_call(self):
+        for answer in ("no\n", "y\n", "YES\n", "yes please\n", ""):
+            with self.subTest(answer=answer):
+                result, calls, _ = self.run_case("confirm-run", stdin_text=answer)
+                self.assertEqual(calls, [])
+                self.assertRegex(result.stdout + result.stderr, r"(?i)(cancel|キャンセル)")
+                self.assertNotIn("Usage:", result.stdout + result.stderr)
+
+    def test_confirm_run_exact_yes_continues_into_run_approval(self):
+        result, calls, _ = self.run_case(
+            "confirm-run", stdin_text="yes\n", BREW_OUTDATED="alpha\n",
+            MO_PREVIEW="Potential cleanup: 2 GiB\n",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.matches(calls, "brew", "update"))
+        self.assertTrue(self.matches(calls, "brew", "outdated"))
+        self.assertTrue(self.matches(calls, "mo", "clean", "--dry-run"))
+        self.assertEqual(len(self.dialogs(calls)), 2)
+        self.assertIn(["brew", "upgrade", "alpha"], calls)
+        self.assertTrue(self.matches(calls, "npm", "prefix", "--global"))
+        self.assertTrue(self.matches(calls, "npm", "outdated", "--global", "--depth=0", "--json"))
+        self.assertTrue(any("更新処理を一括承認" in " ".join(c) for c in self.dialogs(calls)))
+        self.assertTrue(any("Mole 現在の清掃候補" in " ".join(c) for c in self.dialogs(calls)))
+        self.assert_progress_stdout_order(result.stdout, (
+            "開始してよければ yes を入力してください。",
+            "Homebrew更新候補を確認します。",
+            "Mole清掃候補を確認します。",
+            "グローバルnpm更新候補を確認します。",
+            "一括承認を求めます。",
+            "Mole独立承認を求めます。",
+        ))
+        self.assert_progress_source_order(
+            "開始してよければ yes を入力してください。", "read -r",
+        )
+        self.assert_progress_source_order(
+            "Homebrew更新候補を確認します。", "brew update",
+        )
+        self.assert_progress_source_order(
+            "Homebrew更新候補を確認します。", "brew outdated --quiet",
+        )
+        self.assert_progress_source_order(
+            "Mole清掃候補を確認します。", "mo clean --dry-run",
+        )
+        self.assert_progress_source_order(
+            "グローバルnpm更新候補を確認します。", "npm prefix --global",
+        )
+        self.assert_progress_source_order(
+            "グローバルnpm更新候補を確認します。",
+            "npm outdated --global --depth=0 --json",
+        )
+        self.assert_progress_source_order(
+            "一括承認を求めます。", 'approval "更新処理を一括承認しますか?',
+        )
+        self.assert_progress_source_order(
+            "Mole独立承認を求めます。", 'approval "Mole 現在の清掃候補',
+        )
+
+    def assert_progress_source_order(self, progress, command):
+        source = SCRIPT.read_text(encoding="utf-8")
+        progress_at = source.find(progress)
+        self.assertGreaterEqual(progress_at, 0, f"Missing progress marker: {progress}")
+        command_at = source.find(command, progress_at + len(progress))
+        self.assertGreaterEqual(command_at, 0, f"Missing command boundary: {command}")
+        self.assertLess(progress_at, command_at, f"{progress} must precede {command}")
+
+    def assert_progress_stdout_order(self, output, markers):
+        previous_at = -1
+        for marker in markers:
+            marker_at = output.find(marker)
+            self.assertGreaterEqual(marker_at, 0, f"Missing runtime progress marker: {marker}")
+            self.assertGreater(marker_at, previous_at, f"Unexpected progress order at: {marker}")
+            previous_at = marker_at
+
     def test_check_notifies_for_mole_candidates_without_brew_candidates(self):
         result, calls, report = self.run_case(
             "check", MO_PREVIEW="Potential cleanup: 2 GiB\n",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        notifications = self.matches(calls, "osascript")
+        notifications = self.matches(calls, "terminal-notifier")
         self.assertEqual(len(notifications), 1)
-        self.assertIn("display notification", " ".join(notifications[0]))
+        self.assertIn("-open", notifications[0])
+        self.assertIn("warp://tab_config/weekly-maintenance", notifications[0])
         self.assertIn("Mole", report)
         self.assert_check_never_updates_or_prompts(calls)
 
@@ -234,18 +315,23 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertIsNotNone(report)
         self.assertIn("alpha", report)
         self.assertIn("2 GiB", report)
-        notifications = self.matches(calls, "osascript")
+        notifications = self.matches(calls, "terminal-notifier")
         self.assertEqual(len(notifications), 1)
-        self.assertIn("display notification", " ".join(notifications[0]))
+        self.assertIn("-open", notifications[0])
+        self.assertIn("warp://tab_config/weekly-maintenance", notifications[0])
         self.assert_check_never_updates_or_prompts(calls)
 
     def test_failed_notification_still_keeps_last_check(self):
-        _, calls, report = self.run_case(
+        result, calls, report = self.run_case(
             "check", BREW_OUTDATED="alpha\n", NOTIFICATION_FAIL="1",
         )
-        self.assertTrue(self.matches(calls, "osascript"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("macOS notification failed", result.stderr)
+        self.assertTrue(self.matches(calls, "terminal-notifier"))
         self.assertIsNotNone(report)
         self.assertIn("alpha", report)
+        self.assertIn("open 'warp://tab_config/weekly-maintenance'", report)
+        self.assertIn("bash ", report)
         self.assert_check_never_updates_or_prompts(calls)
 
     def test_check_failure_does_not_trigger_modification(self):
@@ -255,6 +341,38 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assert_check_never_updates_or_prompts(calls)
         self.assertIsNotNone(report)
+
+    def test_notification_keeps_direct_run_fallback_with_spaces(self):
+        result, calls, report = self.run_case(
+            "check", BREW_OUTDATED="alpha\n",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("open 'warp://tab_config/weekly-maintenance'", report)
+        self.assertIn("bash ", report)
+        self.assertIn("run", report)
+        self.assertIn("source\\ script\\ with\\ spaces/weekly\\ maintenance.sh run", report)
+        notifications = self.matches(calls, "terminal-notifier")
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(
+            notifications[0][notifications[0].index("-open") + 1],
+            "warp://tab_config/weekly-maintenance",
+        )
+        self.assert_check_never_updates_or_prompts(calls)
+
+    def test_unavailable_notifier_reports_failure_but_preserves_manual_entry(self):
+        result, calls, report = self.run_case(
+            "check", BREW_OUTDATED="alpha\n", TOOL_MISSING="terminal-notifier",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("macOS notification failed", result.stderr)
+        self.assertIn("terminal-notifier", result.stderr)
+        self.assertFalse(self.matches(calls, "terminal-notifier"))
+        self.assertIsNotNone(report)
+        self.assertIn("alpha", report)
+        self.assertIn("open 'warp://tab_config/weekly-maintenance'", report)
+        self.assertIn("bash ", report)
+        self.assertIn("run", report)
+        self.assert_check_never_updates_or_prompts(calls)
 
     def test_run_rechecks_current_brew_candidates_and_upgrades_named_set(self):
         result, calls, _ = self.run_case(
