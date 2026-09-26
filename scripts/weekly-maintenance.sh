@@ -40,6 +40,7 @@ collect_brew() {
       return
     fi
   fi
+  printf 'Homebrew候補一覧を取得しています（通常は出力がありません）。\n'
   if brew_output="$(brew outdated --quiet)"; then
     brew_ok=1
     while IFS= read -r package; do
