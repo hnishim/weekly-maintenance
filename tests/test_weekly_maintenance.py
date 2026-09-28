@@ -229,25 +229,6 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertIn("run", report)
         self.assert_check_never_updates_or_prompts(calls)
 
-    def test_confirm_run_transitional_alias_needs_no_stdin_and_reaches_run_approval(self):
-        result, calls, _ = self.run_case(
-            "confirm-run", stdin_text="", BREW_OUTDATED="alpha\n",
-            DIALOG_ANSWERS="Cancel",
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("開始してよければ yes", result.stdout + result.stderr)
-        self.assertTrue(self.matches(calls, "brew", "outdated"))
-        self.assertTrue(self.matches(calls, "mo", "clean", "--dry-run"))
-        self.assertTrue(self.matches(calls, "npm", "prefix", "--global"))
-        self.assertEqual(len(self.dialogs(calls)), 1)
-        self.assertFalse(self.matches(calls, "brew", "update"))
-        self.assertFalse(self.destructive(calls))
-
-    def test_confirm_run_transitional_alias_has_no_terminal_confirmation_source(self):
-        source = SCRIPT.read_text(encoding="utf-8")
-        self.assertNotIn("開始してよければ yes を入力してください。", source)
-        self.assertNotIn("read -r confirmation", source)
-
     def assert_progress_source_order(self, progress, command):
         source = SCRIPT.read_text(encoding="utf-8")
         progress_at = source.find(progress)
@@ -548,9 +529,11 @@ class WeeklyMaintenanceTests(unittest.TestCase):
 
 
     def test_invalid_mode_never_invokes_any_external_command(self):
-        result, calls, _ = self.run_case("brew-batch")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(calls, [])
+        for mode in ("brew-batch", "confirm-run"):
+            with self.subTest(mode=mode):
+                result, calls, _ = self.run_case(mode)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(calls, [])
 
     def test_zero_candidates_approved_brew_runs_only_greedy(self):
         result, calls, _ = self.run_case("run", DIALOG_ANSWERS="OK")
