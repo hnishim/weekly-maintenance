@@ -3,10 +3,6 @@
 set -u
 export HOMEBREW_NO_AUTO_UPDATE=1
 mode="${1:-}"
-if [[ "$mode" == "confirm-run" ]]; then
-  # Transitional alias for the current Warp Tab Config; remove in HIR-336.
-  mode="run"
-fi
 if [[ "$mode" != "check" && "$mode" != "run" ]]; then
   printf 'Usage: %s {check|run}\n' "$0" >&2
   exit 2
