@@ -4,15 +4,7 @@ set -u
 export HOMEBREW_NO_AUTO_UPDATE=1
 mode="${1:-}"
 if [[ "$mode" == "confirm-run" ]]; then
-  printf '開始してよければ yes を入力してください。\n'
-  if ! IFS= read -r confirmation; then
-    printf '\n開始をキャンセルしました（入力を受け取れませんでした）。\n'
-    exit 0
-  fi
-  if [[ "$confirmation" != "yes" ]]; then
-    printf '開始をキャンセルしました。\n'
-    exit 0
-  fi
+  # Transitional alias for the current Warp Tab Config; remove in HIR-336.
   mode="run"
 fi
 if [[ "$mode" != "check" && "$mode" != "run" ]]; then
@@ -32,14 +24,6 @@ package_count=0
 
 collect_brew() {
   printf 'Homebrew更新候補を確認します。\n'
-  if [[ "$mode" == "run" ]]; then
-    printf 'Homebrew: brew update は更新候補を確認するための定義更新です（アプリ自体は更新しません）。\n'
-    if ! brew update; then
-      printf 'Homebrew: brew update failed; all Homebrew changes skipped.\n' >&2
-      error=1
-      return
-    fi
-  fi
   printf 'Homebrew候補一覧を取得しています（通常は出力がありません）。\n'
   if brew_output="$(brew outdated --quiet)"; then
     brew_ok=1
@@ -164,9 +148,9 @@ if command -v npm >/dev/null 2>&1; then
   fi
 fi
 if [[ "$npm_ok" -eq 0 ]]; then npm_result="skipped (npm unavailable or preflight failed)"; error=1; fi
-brew_scope="Homebrew: 通常候補${package_count}件。
+brew_scope="Homebrew: 現在の通常候補${package_count}件。
 ${brew_output}
-続いてgreedy cask更新（通常候補外も実行時に再評価）。"
+承認後にbrew updateで定義を更新し、通常候補を再確認してから更新。続いてgreedy cask更新（通常候補外も実行時に再評価）。"
 if [[ "$brew_ok" -eq 0 ]]; then brew_scope="Homebrew通常更新・greedy cask: 前提確認失敗のため対象外（実行しない）。"; fi
 mas_scope="Mac App Store: mas upgradeで全更新候補を更新。"
 if [[ "$mas_ok" -eq 0 ]]; then mas_scope="Mac App Store: 未配置のため対象外（実行しない）。"; fi
@@ -181,38 +165,62 @@ ${mas_scope}
 ${npm_scope}"; then batch_approved=1; fi
 if [[ "$brew_ok" -eq 1 ]]; then
   if [[ "$package_count" -gt 0 ]]; then
-    printf 'Homebrew 通常更新候補（%s件）:\n' "$package_count"
+    printf 'Homebrew 現在の通常更新候補（%s件）:\n' "$package_count"
     printf '  %s\n' "${packages[@]}"
   else
-    printf 'Homebrew 通常更新候補: 0件。\n'
+    printf 'Homebrew 現在の通常更新候補: 0件。\n'
     brew_normal="no candidates"
   fi
   printf '%s\n' \
     'Homebrew 承認対象・実行順:' \
-    '1. 表示した通常候補のみを更新（0件なら省略）。' \
-    '2. brew upgrade --cask --greedy: 通常候補にない自動更新対応cask等も含め実行時に再判定して更新。' \
-    '2は通常候補が0件でも対象となる場合があります。全対象をこの候補一覧で固定できません。'
+    '1. 承認後にbrew updateで定義を更新し、通常候補を再確認する。' \
+    '2. 再確認した通常候補のみを更新（0件なら省略）。' \
+    '3. brew upgrade --cask --greedy: 通常候補にない自動更新対応cask等も含め実行時に再判定して更新。' \
+    '3は通常候補が0件でも対象となる場合があります。全対象を承認前の通常候補一覧で固定できません。'
   if [[ "$batch_approved" -eq 1 ]]; then
-    brew_stages_ok=1
-    if [[ "$package_count" -gt 0 ]]; then
-      if brew upgrade "${packages[@]}"; then
-        brew_normal="success"
+    printf 'Homebrew定義を更新し、通常候補を再確認します。\n'
+    if brew update; then
+      packages=()
+      package_count=0
+      brew_output=""
+      brew_ok=0
+      collect_brew
+      if [[ "$brew_ok" -eq 1 ]]; then
+        brew_stages_ok=1
+        if [[ "$package_count" -gt 0 ]]; then
+          printf 'Homebrew 更新後の通常候補（%s件）:\n' "$package_count"
+          printf '  %s\n' "${packages[@]}"
+          if brew upgrade "${packages[@]}"; then
+            brew_normal="success"
+          else
+            brew_normal="failed"
+            brew_stages_ok=0
+            error=1
+          fi
+        else
+          printf 'Homebrew 更新後の通常候補: 0件。\n'
+          brew_normal="no candidates"
+        fi
+        if [[ "$brew_stages_ok" -eq 1 ]]; then
+          if brew upgrade --cask --greedy; then
+            brew_greedy="success"
+          else
+            brew_greedy="failed"
+            brew_stages_ok=0
+            error=1
+          fi
+        else
+          brew_greedy="skipped (previous Homebrew stage failed)"
+        fi
       else
-        brew_normal="failed"
-        brew_stages_ok=0
-        error=1
-      fi
-    fi
-    if [[ "$brew_stages_ok" -eq 1 ]]; then
-      if brew upgrade --cask --greedy; then
-        brew_greedy="success"
-      else
-        brew_greedy="failed"
-        brew_stages_ok=0
-        error=1
+        brew_normal="skipped (post-update candidate check failed)"
+        brew_greedy="skipped (post-update candidate check failed)"
       fi
     else
-      brew_greedy="skipped (previous Homebrew stage failed)"
+      printf 'Homebrew: brew update failed; all Homebrew changes skipped.\n' >&2
+      brew_normal="skipped (brew update failed)"
+      brew_greedy="skipped (brew update failed)"
+      error=1
     fi
   else
     if [[ "$package_count" -gt 0 ]]; then
