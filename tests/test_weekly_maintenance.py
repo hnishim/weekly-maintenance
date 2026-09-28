@@ -28,13 +28,19 @@ with open(os.environ["TEST_CALL_LOG"], "a", encoding="utf-8") as file:
     file.write(json.dumps([name, *args]) + "\n")
 
 if name == "brew":
+    update_marker = Path(os.environ["TEST_BREW_UPDATED_MARKER"])
     if args[:1] == ["update"]:
         if os.environ.get("BREW_UPDATE_FAIL") == "1":
             sys.exit(7)
+        update_marker.write_text("1")
     elif args[:1] == ["outdated"]:
-        if os.environ.get("BREW_OUTDATED_FAIL") == "1":
+        updated = update_marker.exists()
+        if (os.environ.get("BREW_OUTDATED_FAIL") == "1"
+                or (not updated and os.environ.get("BREW_OUTDATED_FAIL_BEFORE_UPDATE") == "1")
+                or (updated and os.environ.get("BREW_OUTDATED_FAIL_AFTER_UPDATE") == "1")):
             sys.exit(8)
-        print(os.environ.get("BREW_OUTDATED", ""), end="")
+        key = "BREW_OUTDATED_AFTER_UPDATE" if updated else "BREW_OUTDATED_BEFORE_UPDATE"
+        print(os.environ.get(key, os.environ.get("BREW_OUTDATED", "")), end="")
     elif args[:1] == ["upgrade"]:
         if args[1:] == ["--cask", "--greedy"]:
             if os.environ.get("BREW_GREEDY_FAIL") == "1":
@@ -131,6 +137,7 @@ class WeeklyMaintenanceTests(unittest.TestCase):
                 "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
                 "TEST_CALL_LOG": str(call_log),
                 "TEST_DIALOG_COUNTER": str(base / "dialog-index"),
+                "TEST_BREW_UPDATED_MARKER": str(base / "brew-updated"),
                 "WEEKLY_MAINTENANCE_REPORT": str(report),
                 "BREW_OUTDATED": "",
                 "MO_PREVIEW": "",
@@ -222,62 +229,24 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertIn("run", report)
         self.assert_check_never_updates_or_prompts(calls)
 
-    def test_confirm_run_requires_exact_yes_before_any_external_call(self):
-        for answer in ("no\n", "y\n", "YES\n", "yes please\n", ""):
-            with self.subTest(answer=answer):
-                result, calls, _ = self.run_case("confirm-run", stdin_text=answer)
-                self.assertEqual(calls, [])
-                self.assertRegex(result.stdout + result.stderr, r"(?i)(cancel|キャンセル)")
-                self.assertNotIn("Usage:", result.stdout + result.stderr)
-
-    def test_confirm_run_exact_yes_continues_into_run_approval(self):
+    def test_confirm_run_transitional_alias_needs_no_stdin_and_reaches_run_approval(self):
         result, calls, _ = self.run_case(
-            "confirm-run", stdin_text="yes\n", BREW_OUTDATED="alpha\n",
-            MO_PREVIEW="Potential cleanup: 2 GiB\n",
+            "confirm-run", stdin_text="", BREW_OUTDATED="alpha\n",
+            DIALOG_ANSWERS="Cancel",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.matches(calls, "brew", "update"))
+        self.assertNotIn("開始してよければ yes", result.stdout + result.stderr)
         self.assertTrue(self.matches(calls, "brew", "outdated"))
         self.assertTrue(self.matches(calls, "mo", "clean", "--dry-run"))
-        self.assertEqual(len(self.dialogs(calls)), 2)
-        self.assertIn(["brew", "upgrade", "alpha"], calls)
         self.assertTrue(self.matches(calls, "npm", "prefix", "--global"))
-        self.assertTrue(self.matches(calls, "npm", "outdated", "--global", "--depth=0", "--json"))
-        self.assertTrue(any("更新処理を一括承認" in " ".join(c) for c in self.dialogs(calls)))
-        self.assertTrue(any("Mole 現在の清掃候補" in " ".join(c) for c in self.dialogs(calls)))
-        self.assert_progress_stdout_order(result.stdout, (
-            "開始してよければ yes を入力してください。",
-            "Homebrew更新候補を確認します。",
-            "Mole清掃候補を確認します。",
-            "グローバルnpm更新候補を確認します。",
-            "一括承認を求めます。",
-            "Mole独立承認を求めます。",
-        ))
-        self.assert_progress_source_order(
-            "開始してよければ yes を入力してください。", "read -r",
-        )
-        self.assert_progress_source_order(
-            "Homebrew更新候補を確認します。", "brew update",
-        )
-        self.assert_progress_source_order(
-            "Homebrew更新候補を確認します。", "brew outdated --quiet",
-        )
-        self.assert_progress_source_order(
-            "Mole清掃候補を確認します。", "mo clean --dry-run",
-        )
-        self.assert_progress_source_order(
-            "グローバルnpm更新候補を確認します。", "npm prefix --global",
-        )
-        self.assert_progress_source_order(
-            "グローバルnpm更新候補を確認します。",
-            "npm outdated --global --depth=0 --json",
-        )
-        self.assert_progress_source_order(
-            "一括承認を求めます。", 'approval "更新処理を一括承認しますか?',
-        )
-        self.assert_progress_source_order(
-            "Mole独立承認を求めます。", 'approval "Mole 現在の清掃候補',
-        )
+        self.assertEqual(len(self.dialogs(calls)), 1)
+        self.assertFalse(self.matches(calls, "brew", "update"))
+        self.assertFalse(self.destructive(calls))
+
+    def test_confirm_run_transitional_alias_has_no_terminal_confirmation_source(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("開始してよければ yes を入力してください。", source)
+        self.assertNotIn("read -r confirmation", source)
 
     def assert_progress_source_order(self, progress, command):
         source = SCRIPT.read_text(encoding="utf-8")
@@ -392,6 +361,88 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertNotIn("old-alpha", " ".join(dialogs[0]))
         self.assertIn(["brew", "upgrade", "new-alpha", "new-beta"], calls)
         self.assertIn(["brew", "upgrade", "--cask", "--greedy"], calls)
+
+    def test_run_cancel_never_changes_before_or_after_first_approval(self):
+        result, calls, _ = self.run_case(
+            "run", BREW_OUTDATED="alpha\n", DIALOG_ANSWERS="Cancel",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        dialog_index = next(
+            i for i, call in enumerate(calls)
+            if call[0] == "osascript" and "display dialog" in " ".join(call)
+        )
+        before_approval = calls[:dialog_index]
+        self.assertFalse(self.matches(before_approval, "brew", "update"))
+        self.assertFalse(self.destructive(before_approval))
+        self.assertFalse(self.matches(calls, "brew", "update"))
+        self.assertFalse(self.destructive(calls))
+
+    def test_run_approval_updates_homebrew_then_rechecks_latest_candidates(self):
+        result, calls, _ = self.run_case(
+            "run",
+            BREW_OUTDATED_BEFORE_UPDATE="old-alpha\n",
+            BREW_OUTDATED_AFTER_UPDATE="new-alpha\nnew-beta\n",
+            DIALOG_ANSWERS="OK",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        outdated_indices = [
+            i for i, call in enumerate(calls)
+            if call[:2] == ["brew", "outdated"]
+        ]
+        self.assertEqual(len(outdated_indices), 2)
+        dialog_index = next(
+            i for i, call in enumerate(calls)
+            if call[0] == "osascript" and "display dialog" in " ".join(call)
+        )
+        update_index = calls.index(["brew", "update"])
+        upgrade_index = calls.index(["brew", "upgrade", "new-alpha", "new-beta"])
+        self.assertLess(outdated_indices[0], dialog_index)
+        self.assertLess(dialog_index, update_index)
+        self.assertLess(update_index, outdated_indices[1])
+        self.assertLess(outdated_indices[1], upgrade_index)
+        dialog = " ".join(self.dialogs(calls)[0])
+        self.assertIn("old-alpha", dialog)
+        self.assertTrue("承認後" in dialog or "brew update" in dialog)
+        self.assertNotIn(["brew", "upgrade", "old-alpha"], calls)
+
+    def test_run_brew_update_failure_after_approval_skips_homebrew_only(self):
+        result, calls, _ = self.run_case(
+            "run", BREW_OUTDATED_BEFORE_UPDATE="alpha\n",
+            BREW_UPDATE_FAIL="1", DIALOG_ANSWERS="OK",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        dialog_index = next(
+            i for i, call in enumerate(calls)
+            if call[0] == "osascript" and "display dialog" in " ".join(call)
+        )
+        update_index = calls.index(["brew", "update"])
+        self.assertLess(dialog_index, update_index)
+        self.assertFalse(self.matches(calls, "brew", "upgrade"))
+        self.assertIn(["mas", "upgrade"], calls)
+        self.assertTrue(self.npm_mutations(calls))
+
+    def test_run_post_update_candidate_failure_skips_homebrew_only(self):
+        result, calls, _ = self.run_case(
+            "run", BREW_OUTDATED_BEFORE_UPDATE="alpha\n",
+            BREW_OUTDATED_FAIL_AFTER_UPDATE="1", DIALOG_ANSWERS="OK",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        outdated_indices = [
+            i for i, call in enumerate(calls)
+            if call[:2] == ["brew", "outdated"]
+        ]
+        self.assertEqual(len(outdated_indices), 2)
+        dialog_index = next(
+            i for i, call in enumerate(calls)
+            if call[0] == "osascript" and "display dialog" in " ".join(call)
+        )
+        update_index = calls.index(["brew", "update"])
+        self.assertLess(outdated_indices[0], dialog_index)
+        self.assertLess(dialog_index, update_index)
+        self.assertLess(update_index, outdated_indices[1])
+        self.assertFalse(self.matches(calls, "brew", "upgrade"))
+        self.assertIn(["mas", "upgrade"], calls)
+        self.assertTrue(self.npm_mutations(calls))
 
     def test_run_rechecks_mole_instead_of_reusing_previous_report(self):
         result, calls, _ = self.run_case(
@@ -806,9 +857,10 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         self.assertIn(["mas", "upgrade"], calls)
         self.assertIn(["mo", "clean"], calls)
 
-    def test_update_approval_shows_all_scopes_and_preflight_exclusions(self):
+    def test_update_approval_excludes_failed_preflight_but_not_post_approval_brew_update(self):
         result, calls, _ = self.run_case(
-            "run", BREW_UPDATE_FAIL="1", NPM_OUTDATED_FAIL="1",
+            "run", BREW_OUTDATED_BEFORE_UPDATE="alpha\n",
+            BREW_UPDATE_FAIL="1", NPM_OUTDATED_FAIL="1",
             DIALOG_ANSWERS="OK",
         )
         self.assertNotEqual(result.returncode, 0)
@@ -817,8 +869,17 @@ class WeeklyMaintenanceTests(unittest.TestCase):
         dialog = " ".join(dialogs[0]).lower()
         for marker in ("homebrew", "greedy", "mas", "npm"):
             self.assertIn(marker, dialog)
-        for marker in ("homebrew", "npm"):
-            self.assertTrue(any(marker in line and any(word in line for word in ("除外", "実行しない", "対象外", "skipped", "excluded")) for line in dialog.splitlines()), f"{marker} not excluded: {dialog}")
+        self.assertTrue(any(
+            "npm" in line and any(word in line for word in
+                                  ("除外", "実行しない", "対象外", "skipped", "excluded"))
+            for line in dialog.splitlines()
+        ), f"npm not excluded: {dialog}")
+        update_index = calls.index(["brew", "update"])
+        dialog_index = next(
+            i for i, call in enumerate(calls)
+            if call[0] == "osascript" and "display dialog" in " ".join(call)
+        )
+        self.assertLess(dialog_index, update_index)
         self.assertFalse(self.matches(calls, "brew", "upgrade"))
         self.assertFalse(self.npm_mutations(calls))
         self.assertIn(["mas", "upgrade"], calls)
